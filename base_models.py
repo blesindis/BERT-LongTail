@@ -3,6 +3,7 @@ from transformer.Transformer import BertModel, BertDecoderModel, BertLayerSaveMo
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead
 
 
+# origin bert
 class BertForMLM(nn.Module):
     def __init__(self, config):
         super(BertForMLM, self).__init__()
@@ -33,6 +34,7 @@ class BertForMLM(nn.Module):
         return mlm_loss, scores
     
     
+# a failed try to add a decoder to each bert layer to perform layer replay
 class BertWithDecoders(nn.Module):
     def __init__(self, config):
         super(BertWithDecoders, self).__init__()
@@ -66,6 +68,7 @@ class BertWithDecoders(nn.Module):
         return outputs
     
     
+# a bert that save each layer output and decoder output
 class BertWithSavers(nn.Module):
     def __init__(self, config):
         super(BertWithSavers, self).__init__()

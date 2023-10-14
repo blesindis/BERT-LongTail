@@ -20,18 +20,6 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
-    
-    
-def get_available_cuda_device() -> int:
-    max_devs = torch.cuda.device_count()
-    for i in range(max_devs):
-        try:
-            mem = torch.cuda.mem_get_info(i)
-        except:
-            continue
-        if mem[0] / mem[1] > 0.85:
-            return i
-    return -1
 
 
 def validate(model, val_loader, accelerator):
@@ -44,30 +32,9 @@ def validate(model, val_loader, accelerator):
     
     losses = torch.cat(losses)[:len(val_loader.dataset)]
     perplexity = torch.mean(losses)
+    # perplexity = torch.exp(perplexity)
     
     return perplexity
-
-
-def get_gradient_norms(model):
-    """Utility function to get gradient norms of a model."""
-    return [param.grad.norm().item() for param in model.parameters() if param.grad is not None]
-
-
-def differentiable_pca(x, k=2):
-    scaler = StandardScaler()
-    standarlized_x = scaler.fit_transform(x.cpu().numpy())
-    x = torch.from_numpy(standarlized_x)
-    x = x.to('cuda')
-    # Perform SVD
-    U, S, V = torch.svd(x)
-
-    # Extract the top k principal components
-    principal_components = U[:, :k]
-
-    # Project data onto these components
-    reduced_data = x @ V[:, :k]
-
-    return reduced_data
 
 
 def load_layer_data(path):
@@ -76,56 +43,103 @@ def load_layer_data(path):
     return layer_data
 
 
-def train(model, num_epochs, dataset, dataset_pre):
+def train(
+    # model/data params
+    model=None, 
+    num_epochs=10, 
+    dataset=None, 
+    dataset_pre=None,
+    train_on_newdata=True,
+    replay_layerwise=True,
+    replay_decoder=False
+):
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     pre_test_loader = dataset_pre.val_loader
     num_updates = num_epochs * len(train_loader)
     
-    optimizer = optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)
     lr_scheduler = get_cosine_schedule_with_warmup(optimizer=optimizer, num_warmup_steps=num_updates * 0.1, num_training_steps=num_updates)
     accelerator = Accelerator()
     writer = SummaryWriter("log/" + 'bert')
     
     model, optimizer, lr_scheduler, train_loader, val_loader = accelerator.prepare(model, optimizer, lr_scheduler, train_loader, val_loader)
-    accelerator.load_state("./output-formal-1")
+    accelerator.load_state("./output-0-car")
     
-    standard_pcas = load_layer_data('layer_pcas.pth')
-    standard_pcas = [data.requires_grad_(True) for data in standard_pcas]
-    layer_inputs = load_layer_data('layer_inputs.pth')
-    layer_labels = load_layer_data('layer_labels.pth')
-    layer_attns = load_layer_data('layer_attns.pth')
-    print(len(standard_pcas), len(layer_attns))
+    if replay_layerwise:
+        standard_pcas = load_layer_data('layer_pcas.pth')
+        standard_pcas = [data.requires_grad_(True) for data in standard_pcas]
+        layer_inputs = load_layer_data('layer_inputs.pth')
+        layer_labels = load_layer_data('layer_labels.pth')
+        layer_attns = load_layer_data('layer_attns.pth')
+        print(len(standard_pcas), len(layer_attns))
     
+    if replay_decoder:
+        decoder_outputs = load_layer_data('decoder_outputs.pth')
+        inputs = load_layer_data('inputs.pth')
+        labels = load_layer_data('labels.pth')
+        attns = load_layer_data('attns.pth')
+        print(len(attns))
+    
+    model.to('cuda')
+    
+    # freeze decoder
+    # for param in model.head.parameters():
+    #     param.requires_grad = False
+        
+
     for epoch in range(num_epochs):
         model.train()
-        
         """train origin bert (MLM only)"""
         losses = []
-        for i, batch in enumerate(train_loader):            
-            # # loss 1 
-            # loss, _, _ = model(**batch)
-            # losses.append(accelerator.gather(loss.repeat(config.batch_size)))
+        for i, batch in enumerate(train_loader):   
+            # train on new data
+            if train_on_newdata:
+                loss, _, _ = model(**batch)
+                # loss /= 1000000
+                losses.append(accelerator.gather(loss.repeat(config.batch_size)))
+                
+                optimizer.zero_grad()
+                accelerator.backward(loss)
+                optimizer.step()
+                lr_scheduler.step()    
+                loss_train = torch.mean(torch.cat(losses)[:len(train_loader.dataset)])            
             
-            # optimizer.zero_grad()
-            # accelerator.backward(loss)
-            # optimizer.step()
-            # lr_scheduler.step()    
-            # loss_train = torch.mean(torch.cat(losses)[:len(train_loader.dataset)])
-            # # print(f'Epoch:{epoch} ({i} Updates), Train Loss: {loss_train}')
-            
-            # loss 2 
-            mse_loss = nn.MSELoss()
-            batch_old = {'input_ids': layer_inputs[epoch], 'attention_mask': layer_attns[epoch], 'labels': layer_labels[epoch]}
-            _, _, layer_outputs = model(**batch_old)
-            detached_outputs = [output.detach() for output in layer_outputs]
-            detached_outputs = [output.requires_grad_(True) for output in layer_outputs]
-            for j, (detached_output, standard_pca) in enumerate(zip(detached_outputs, standard_pcas)):                
-                if j % 3 == 0:
-                    pca_loss = mse_loss(detached_output, standard_pca[epoch * config.batch_size : (epoch+1) * config.batch_size])                      
-                    local_optimizer = optim.AdamW(model.bert.layers.layers[j].parameters(), lr=1e-5, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)             
-                    local_optimizer.zero_grad()
-                    pca_loss.backward(retain_graph=True)
-                    local_optimizer.step()
+            # replay in former 12 layers
+            if replay_layerwise:
+                mse_loss = nn.MSELoss()
+                batch_old = {'input_ids': layer_inputs[epoch], 'attention_mask': layer_attns[epoch], 'labels': layer_labels[epoch]}
+                _, _, layer_outputs = model(**batch_old)
+                detached_outputs = [output.detach() for output in layer_outputs]
+                detached_outputs = [output.requires_grad_(True) for output in layer_outputs]            
+                for j, (detached_output, standard_pca) in enumerate(zip(detached_outputs, standard_pcas)):                
+                    if j % 3 == 0:
+                        pca_loss = mse_loss(detached_output, standard_pca[epoch * config.batch_size : (epoch+1) * config.batch_size])                      
+                        # pca_loss *= 1000000
+                        local_optimizer = optim.AdamW(model.bert.layers.layers[j].parameters(), lr=1e-2, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)             
+                        local_optimizer.zero_grad()
+                        pca_loss.backward(retain_graph=True)
+                        local_optimizer.step()
+                    
+            # replay in the decoder layer
+            if replay_decoder:                
+                device = 'cuda'
+                mse_loss = nn.MSELoss()
+                batch_old = {'input_ids': inputs[epoch], 'attention_mask': attns[epoch], 'labels': labels[epoch]}
+                batch_old = {key: tensor.to(device) for key, tensor in batch.items()}
+                decoder_outputs[epoch].to(device)
+                _, scores, _ = model(**batch_old)
+                scores.to(device)
+                print(scores.device, decoder_outputs[epoch].device)
+                decoder_loss = mse_loss(scores, decoder_outputs[epoch])
+                local_optimizer = optim.AdamW(model.head.parameters(), lr=1e-4, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)             
+                local_optimizer.zero_grad()
+                decoder_loss.backward(retain_graph=True)
+                local_optimizer.step()
+                
+                device = 'cpu'
+                batch_old = {key: tensor.to(device) for key, tensor in batch.items()}
+                decoder_outputs[epoch].to(device)
+                accelerator.print(f'Epoch:{epoch} ({i} Updates)')
                 
                 
         loss_valid = validate(model, val_loader, accelerator)
@@ -155,4 +169,4 @@ if __name__ == "__main__":
     # model = base_models.BertWithDecoders(config=config)
     # model = nn.DataParallel(model)
     
-    train(model=model, num_epochs=70, dataset=dataset, dataset_pre=dataset_pre)
+    train(model=model, num_epochs=50, dataset=dataset, dataset_pre=dataset_pre)

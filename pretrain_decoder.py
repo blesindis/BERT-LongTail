@@ -1,7 +1,7 @@
 import torch.nn as nn
 import base_models
 from transformers import BertConfig
-from ER_TextSpeech.BERT.Dataset_simp import Wikitext
+from Dataset import Wikitext
 from accelerate import Accelerator
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
@@ -18,18 +18,6 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
-    
-    
-def get_available_cuda_device() -> int:
-    max_devs = torch.cuda.device_count()
-    for i in range(max_devs):
-        try:
-            mem = torch.cuda.mem_get_info(i)
-        except:
-            continue
-        if mem[0] / mem[1] > 0.85:
-            return i
-    return -1
 
 
 def validate(model, val_loader, accelerator, vocab_size):
@@ -49,11 +37,6 @@ def validate(model, val_loader, accelerator, vocab_size):
     perplexity = [torch.mean(single_losses) for single_losses in gathered_losses]
     
     return perplexity
-
-
-def get_gradient_norms(model):
-    """Utility function to get gradient norms of a model."""
-    return [param.grad.norm().item() for param in model.parameters() if param.grad is not None]
 
 
 def train(model, num_epochs, dataset, vocab_size):

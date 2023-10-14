@@ -171,6 +171,8 @@ class BertWithLayerSavers(nn.Module):
             layer_outputs.append(hidden_states)
         return hidden_states, layer_outputs
     
+    
+# save the former 12 layers
 class BertLayerSaveModel(nn.Module):
     def __init__(self, config):
         super(BertLayerSaveModel, self).__init__()
@@ -182,7 +184,8 @@ class BertLayerSaveModel(nn.Module):
         outputs, layer_outputs = self.layers(embeddings, attention_mask)
         return outputs, layer_outputs
             
-    
+
+# add a decoder after each layer 
 class BertDecoderModel(nn.Module):
     def __init__(self, config):
         super(BertDecoderModel, self).__init__()
@@ -195,6 +198,7 @@ class BertDecoderModel(nn.Module):
         return outputs
     
     
+# tradition bert
 class BertModel(nn.Module):
     def __init__(self, config):
         super(BertModel, self).__init__()
