@@ -3,12 +3,10 @@ import base_models
 from transformers import BertConfig
 from Dataset import RestaurantForLM_small
 from accelerate import Accelerator
-from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 import torch.optim as optim
 
+import os
 import torch
 import numpy as np
 import random
@@ -20,36 +18,6 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
-    
-    
-def get_available_cuda_device() -> int:
-    max_devs = torch.cuda.device_count()
-    for i in range(max_devs):
-        try:
-            mem = torch.cuda.mem_get_info(i)
-        except:
-            continue
-        if mem[0] / mem[1] > 0.85:
-            return i
-    return -1
-
-
-def get_gradient_norms(model):
-    """Utility function to get gradient norms of a model."""
-    return [param.grad.norm().item() for param in model.parameters() if param.grad is not None]
-
-
-def differentiable_pca(x, k=2):
-    # Perform SVD
-    U, S, V = torch.svd(x)
-
-    # Extract the top k principal components
-    principal_components = U[:, :k]
-
-    # Project data onto these components
-    reduced_data = x @ V[:, :k]
-
-    return reduced_data
 
 
 def layer_pca(model, dataset, load_path):
@@ -71,45 +39,60 @@ def layer_pca(model, dataset, load_path):
     all_layer_inputs = []
     all_layer_labels = []
     all_layer_attns = []
+    all_decoder_outputs = []
     with torch.no_grad():
-        for i, batch in enumerate(train_loader):
-            if i < 70:                          
-                _, _, layer_outputs = model(**batch)
-                for j, layer_output in enumerate(layer_outputs):  
-                    all_layer_outputs[j].append(layer_output)
+        for i, batch in enumerate(train_loader):   
+            print(i)  
+            if i < 100:                  
+                _, scores, layer_outputs = model(**batch)
                 input = batch['input_ids']
                 label = batch['labels']
                 attention_mask = batch['attention_mask']                    
+                
+                # move to cpu to release cuda memory
+                batch = {key: tensor.to('cpu') for key, tensor in batch.items()}
+                layer_outputs = [output.to('cpu') for output in layer_outputs]
+                scores = scores.to('cpu')
+                
+                # save in my variable
+                for j, layer_output in enumerate(layer_outputs):  
+                    all_layer_outputs[j].append(layer_output)
                 all_layer_inputs.append(input)
                 all_layer_labels.append(label)
                 all_layer_attns.append(attention_mask)
-    
+                all_decoder_outputs.append(scores)
+                
     accelerator.print(f'Number of Samples batches: {len(all_layer_outputs[0])}')
     
     # calculate pca
-    layer_pcas = {}
+    layer_outputs = {}
     layer_inputs = {}
     layer_labels = {}
     layer_attns = {}
-    scaler = StandardScaler()
+    decoder_outputs = {}
+    # save layer outputs
     for i, layer in enumerate(all_layer_outputs):
-        layer_np = [single.cpu().numpy() for single in layer]
+        layer_np = [single.numpy() for single in layer]
         layer = np.vstack(layer_np)
         layer = torch.from_numpy(layer)        
 
-        layer_pcas['layer ' + str(i+1) ] = layer
+        layer_outputs['layer ' + str(i+1) ] = layer
         print(layer.size())
         
+    # save layer inputs, labels, attns
     for i, layer in enumerate(all_layer_inputs):
         layer_inputs['layer' + str(i+1) ] = all_layer_inputs[i]
         layer_labels['layer' + str(i+1) ] = all_layer_labels[i]
         layer_attns['layer' + str(i+1)] = all_layer_attns[i]
+        decoder_outputs['layer' + str(i+1)] = all_decoder_outputs[i]
     
-    # save pcas
-    torch.save(layer_pcas, 'layer_pcas.pth')
-    torch.save(layer_inputs, 'layer_inputs.pth')
-    torch.save(layer_labels, 'layer_labels.pth')
-    torch.save(layer_attns, 'layer_attns.pth')
+    # save to files
+    torch.save(layer_outputs, os.path.join(load_path, 'layer_outputs.pth'))
+    torch.save(layer_inputs, os.path.join(load_path, 'layer_inputs.pth'))
+    torch.save(layer_labels, os.path.join(load_path, 'layer_labels.pth'))
+    torch.save(layer_attns, os.path.join(load_path, 'layer_attns.pth'))
+    torch.save(decoder_outputs, os.path.join(load_path, 'decoder_outputs.pth'))
+    
 
 if __name__ == "__main__":
     set_seed(45)
@@ -118,8 +101,7 @@ if __name__ == "__main__":
     dataset = RestaurantForLM_small(config=config)
     
     model = base_models.BertWithSavers(config=config)
-    # model = base_models.BertWithDecoders(config=config)
     # model = nn.DataParallel(model)
     
-    load_path = "./output-formal-1"
+    load_path = "./output-0-savedecoder"
     layer_pca(model=model, dataset=dataset, load_path=load_path)
