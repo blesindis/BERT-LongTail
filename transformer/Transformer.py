@@ -182,6 +182,9 @@ class BertLayerSaveModel(nn.Module):
     def forward(self, input_ids, attention_mask) -> torch.Tensor:
         embeddings = self.embeddings(input_ids)
         outputs, layer_outputs = self.layers(embeddings, attention_mask)
+        
+        embeddings_list = [embeddings]
+        layer_outputs = embeddings_list + layer_outputs # the 1st layer inputs + 12 layer outputs
         return outputs, layer_outputs
             
 
