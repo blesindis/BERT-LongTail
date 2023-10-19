@@ -5,6 +5,11 @@ from Dataset import RestaurantForLM_small
 from accelerate import Accelerator
 from transformers import BertConfig, get_cosine_schedule_with_warmup
 import torch.optim as optim
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.cluster import DBSCAN
+from sklearn.cluster import KMeans
+from scipy.spatial import distance
 
 import os
 import torch
@@ -18,6 +23,123 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
+
+
+def pca(input):
+    # X = X.view(-1, X.shape[-1])
+    X = input.mean(axis=1)
+    print(X.size())
+    X = X.cpu().numpy()
+    scaler = StandardScaler()
+    X_std = scaler.fit_transform(X)
+    
+    pca = PCA(n_components=X.shape[1])
+    X_pca = pca.fit_transform(X_std)
+    
+    explained_variance_ratio = pca.explained_variance_ratio_.cumsum()
+
+    """Set threshold and Find the number of components for a threshold"""
+    num_components = np.argmax(explained_variance_ratio >= 0.80) + 1
+
+    # Now, you can recompute PCA with this number of components
+    pca = PCA(n_components=num_components)
+    X_pca_efficient = pca.fit_transform(X_std)
+    
+    X_pca_efficient = torch.tensor(X_pca_efficient) 
+    print(X_pca_efficient.size())
+    
+    return X_pca_efficient
+
+
+def find_largest_eps(X, min_eps=0.01, max_eps=10.0, min_samples=5, tolerance=1e-4):
+    low = min_eps
+    high = max_eps
+    best_eps = min_eps
+    
+    while high - low > tolerance:
+        mid = (low + high) / 2
+        dbscan = DBSCAN(eps=mid, min_samples=min_samples)
+        clusters = dbscan.fit_predict(X)
+        
+        # Number of unique clusters excluding noise
+        unique_labels = np.unique(clusters)
+        n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
+        
+        if n_clusters >= 2:
+            best_eps = mid
+            low = mid
+        else:
+            high = mid
+            
+    return best_eps
+
+
+def cluster_DBSCAN(X):
+    # eps = find_largest_eps(X)
+    # print(eps)
+    dbscan = DBSCAN(eps=10, min_samples=5)
+    clusters = dbscan.fit_predict(X)
+    # Get unique cluster labels
+    unique_labels = np.unique(clusters)
+
+    # Count of clusters excluding noise
+    n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
+
+    print(f"Number of clusters: {n_clusters}")
+
+
+def find_elbow(X, K_range):
+    distortions = []
+    for k in K_range:
+        kmeans = KMeans(n_clusters=k).fit(X)
+        distortions.append(kmeans.inertia_)
+
+    # Calculate the differences between consecutive distortions
+    diffs = np.diff(distortions)
+
+    # Calculate the differences of the differences
+    diff_diffs = np.diff(diffs)
+
+    # Find the "elbow" point
+    optimal_k = K_range[np.argmin(diff_diffs) + 1] # +1 because we are using the difference of differences
+    return optimal_k
+
+
+def cluster_kmeans(X_pca, X, X_pre, labels, attns, n_samples):
+    K_range = range(1, 10)
+    optimal_k = find_elbow(X_pca, K_range)
+    
+    kmeans = KMeans(n_clusters=optimal_k)
+    y_kmeans = kmeans.fit_predict(X_pca)
+        
+    # Extract cluster centers
+    centers = kmeans.cluster_centers_
+
+    nearest_points_per_center = []
+    nearest_pre_points_per_center = []
+    points_lables = []
+    points_attns = []
+
+    print(len(centers))
+    for center in centers:
+        # Compute distances from the center to each point
+        distances = [distance.euclidean(center, point) for point in X_pca]
+        
+        # Get indices of 64 nearest samples
+        nearest_indices = np.argsort(distances)[:n_samples]
+        
+        # Append nearest samples to the result list
+        nearest_points_per_center.append(X[nearest_indices])
+        nearest_pre_points_per_center.append(X_pre[nearest_indices])
+        points_lables.append(labels[nearest_indices])
+        points_attns.append(attns[nearest_indices])
+    
+    output_points = torch.cat(nearest_points_per_center, dim=0)
+    input_points = torch.cat(nearest_pre_points_per_center, dim=0)
+    label_points = torch.cat(points_lables, dim=0)
+    attn_points = torch.cat(points_attns, dim=0)
+
+    return output_points, input_points, label_points, attn_points
 
 
 def layer_pca(model, dataset, load_path):
@@ -35,7 +157,7 @@ def layer_pca(model, dataset, load_path):
     # run once
     model.eval()
     
-    all_layer_outputs = [[] for i in range(12)]
+    all_layer_outputs = [[] for i in range(13)]
     all_layer_inputs = []
     all_layer_labels = []
     all_layer_attns = []
@@ -43,11 +165,11 @@ def layer_pca(model, dataset, load_path):
     with torch.no_grad():
         for i, batch in enumerate(train_loader):   
             print(i)  
-            if i < 100:                  
+            if i < 108:                  
                 _, scores, layer_outputs = model(**batch)
                 input = batch['input_ids']
                 label = batch['labels']
-                attention_mask = batch['attention_mask']                    
+                attention_mask = batch['attention_mask']
                 
                 # move to cpu to release cuda memory
                 batch = {key: tensor.to('cpu') for key, tensor in batch.items()}
@@ -61,37 +183,60 @@ def layer_pca(model, dataset, load_path):
                 all_layer_labels.append(label)
                 all_layer_attns.append(attention_mask)
                 all_decoder_outputs.append(scores)
+            else:
+                break
                 
     accelerator.print(f'Number of Samples batches: {len(all_layer_outputs[0])}')
     
-    # calculate pca
-    layer_outputs = {}
     layer_inputs = {}
+    layer_outputs = {}
     layer_labels = {}
-    layer_attns = {}
-    decoder_outputs = {}
-    # save layer outputs
-    for i, layer in enumerate(all_layer_outputs):
-        layer_np = [single.numpy() for single in layer]
-        layer = np.vstack(layer_np)
-        layer = torch.from_numpy(layer)        
-
-        layer_outputs['layer ' + str(i+1) ] = layer
-        print(layer.size())
-        
-    # save layer inputs, labels, attns
-    for i, layer in enumerate(all_layer_inputs):
-        layer_inputs['layer' + str(i+1) ] = all_layer_inputs[i]
-        layer_labels['layer' + str(i+1) ] = all_layer_labels[i]
-        layer_attns['layer' + str(i+1)] = all_layer_attns[i]
-        decoder_outputs['layer' + str(i+1)] = all_decoder_outputs[i]
+    layer_attns = {} 
     
-    # save to files
+    for i in range(1, 13):
+        per_layer_outputs, per_layer_inputs = all_layer_outputs[i], all_layer_outputs[i-1]
+        layer_outputs_tensor, layer_inputs_tensor, layer_labels_tensor, layer_attns_tensor = torch.cat(per_layer_outputs, dim=0), torch.cat(per_layer_inputs, dim=0), torch.cat(all_layer_labels, dim=0), torch.cat(all_layer_attns, dim=0)
+        layer_pca = pca(layer_outputs_tensor)
+        sampled_inputs, sampled_outputs, sampled_labels, sampled_attns = cluster_kmeans(layer_pca, layer_outputs_tensor, layer_inputs_tensor, layer_labels_tensor, layer_attns_tensor, 8)
+        layer_inputs['layer' + str(i)] = sampled_inputs
+        layer_outputs['layer' + str(i)] = sampled_outputs
+        layer_labels['layer' + str(i)] = sampled_labels
+        layer_attns['layer' + str(i)] = sampled_attns
+         
     torch.save(layer_outputs, os.path.join(load_path, 'layer_outputs.pth'))
     torch.save(layer_inputs, os.path.join(load_path, 'layer_inputs.pth'))
     torch.save(layer_labels, os.path.join(load_path, 'layer_labels.pth'))
     torch.save(layer_attns, os.path.join(load_path, 'layer_attns.pth'))
-    torch.save(decoder_outputs, os.path.join(load_path, 'decoder_outputs.pth'))
+    
+    # # calculate pca
+    # layer_outputs = {}
+    # layer_inputs = {}
+    # layer_labels = {}
+    # layer_attns = {}
+    # decoder_outputs = {}
+    # # save layer outputs
+    # for i, layer in enumerate(all_layer_outputs):
+    #     layer_np = [single.numpy() for single in layer]
+    #     layer = np.vstack(layer_np)
+    #     layer = torch.from_numpy(layer)        
+
+    #     layer_outputs['layer ' + str(i+1) ] = layer
+    #     print(layer.size())
+        
+    # # save layer inputs, labels, attns
+    # for i, layer in enumerate(all_layer_inputs):
+    #     layer_inputs['layer' + str(i+1) ] = all_layer_inputs[i]
+    #     layer_labels['layer' + str(i+1) ] = all_layer_labels[i]
+    #     layer_attns['layer' + str(i+1)] = all_layer_attns[i]
+    #     decoder_outputs['layer' + str(i+1)] = all_decoder_outputs[i]
+    
+    # # save to files
+    # torch.save(layer_outputs, os.path.join(load_path, 'layer_outputs.pth'))
+
+    # torch.save(layer_inputs, os.path.join(load_path, 'layer_inputs.pth'))
+    # torch.save(layer_labels, os.path.join(load_path, 'layer_labels.pth'))
+    # torch.save(layer_attns, os.path.join(load_path, 'layer_attns.pth'))
+    # torch.save(decoder_outputs, os.path.join(load_path, 'decoder_outputs.pth'))
     
 
 if __name__ == "__main__":
@@ -103,5 +248,5 @@ if __name__ == "__main__":
     model = base_models.BertWithSavers(config=config)
     # model = nn.DataParallel(model)
     
-    load_path = "./output-0-savedecoder"
+    load_path = "./output-0-saveall-1016"
     layer_pca(model=model, dataset=dataset, load_path=load_path)
