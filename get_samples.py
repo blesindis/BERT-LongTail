@@ -1,20 +1,24 @@
+import os
+import random
+import numpy as np
+import torch
 import torch.nn as nn
-import base_models
-from transformers import BertConfig
-from Dataset import RestaurantForLM_small
+import torch.optim as optim
 from accelerate import Accelerator
 from transformers import BertConfig, get_cosine_schedule_with_warmup
-import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from sklearn.cluster import DBSCAN
-from sklearn.cluster import KMeans
+from sklearn.cluster import DBSCAN, KMeans
 from scipy.spatial import distance
 
-import os
-import torch
-import numpy as np
-import random
+import base_models
+from Dataset import RestaurantForLM_small
+
+
+# Constants and Configurations
+SEED = 45
+LOAD_PATH = "./output-0-saveall-1016"
+CONFIG_PATH = 'config/bert.json'
 
 
 def set_seed(seed: int) -> None:
@@ -142,7 +146,7 @@ def cluster_kmeans(X_pca, X, X_pre, labels, attns, n_samples):
     return output_points, input_points, label_points, attn_points
 
 
-def layer_pca(model, dataset, load_path):
+def layerwise_pca(model, dataset, load_path):
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     num_updates = 70 * len(train_loader)
     
@@ -208,45 +212,18 @@ def layer_pca(model, dataset, load_path):
     torch.save(layer_labels, os.path.join(load_path, 'layer_labels.pth'))
     torch.save(layer_attns, os.path.join(load_path, 'layer_attns.pth'))
     
-    # # calculate pca
-    # layer_outputs = {}
-    # layer_inputs = {}
-    # layer_labels = {}
-    # layer_attns = {}
-    # decoder_outputs = {}
-    # # save layer outputs
-    # for i, layer in enumerate(all_layer_outputs):
-    #     layer_np = [single.numpy() for single in layer]
-    #     layer = np.vstack(layer_np)
-    #     layer = torch.from_numpy(layer)        
 
-    #     layer_outputs['layer ' + str(i+1) ] = layer
-    #     print(layer.size())
-        
-    # # save layer inputs, labels, attns
-    # for i, layer in enumerate(all_layer_inputs):
-    #     layer_inputs['layer' + str(i+1) ] = all_layer_inputs[i]
-    #     layer_labels['layer' + str(i+1) ] = all_layer_labels[i]
-    #     layer_attns['layer' + str(i+1)] = all_layer_attns[i]
-    #     decoder_outputs['layer' + str(i+1)] = all_decoder_outputs[i]
+def main():
+    set_seed(SEED)
     
-    # # save to files
-    # torch.save(layer_outputs, os.path.join(load_path, 'layer_outputs.pth'))
-
-    # torch.save(layer_inputs, os.path.join(load_path, 'layer_inputs.pth'))
-    # torch.save(layer_labels, os.path.join(load_path, 'layer_labels.pth'))
-    # torch.save(layer_attns, os.path.join(load_path, 'layer_attns.pth'))
-    # torch.save(decoder_outputs, os.path.join(load_path, 'decoder_outputs.pth'))
-    
-
-if __name__ == "__main__":
-    set_seed(45)
-    
-    config = BertConfig.from_json_file('config/bert.json')
+    config = BertConfig.from_json_file(CONFIG_PATH)
     dataset = RestaurantForLM_small(config=config)
     
     model = base_models.BertWithSavers(config=config)
-    # model = nn.DataParallel(model)
+    # model = nn.DataParallel(model) # Uncomment if using DataParallel
     
-    load_path = "./output-0-saveall-1016"
-    layer_pca(model=model, dataset=dataset, load_path=load_path)
+    layerwise_pca(model=model, dataset=dataset, load_path=LOAD_PATH)
+
+
+if __name__ == "__main__":
+    main()
