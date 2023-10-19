@@ -7,8 +7,8 @@ from accelerate import Accelerator
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
 import torch.optim as optim
-from sklearn.preprocessing import StandardScaler
 
+import os
 import torch
 import numpy as np
 import random
@@ -61,7 +61,8 @@ def train(
     dataset_pre=None,
     train_on_newdata=True,
     replay_layerwise=True,
-    replay_decoder=True
+    replay_decoder=False,
+    load_path=None
 ):
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     pre_test_loader = dataset_pre.val_loader
@@ -73,18 +74,18 @@ def train(
     writer = SummaryWriter("log/" + 'bert')
     
     model, optimizer, lr_scheduler, train_loader, val_loader = accelerator.prepare(model, optimizer, lr_scheduler, train_loader, val_loader)
-    accelerator.load_state("./output-0-savedecoder")
+    accelerator.load_state(load_path)
     
     if replay_layerwise:
-        standard_pcas = load_layer_data('layer_outputs.pth')
-        standard_pcas = [data.requires_grad_(True) for data in standard_pcas]
-        layer_inputs = load_layer_data('layer_inputs.pth')
-        layer_labels = load_layer_data('layer_labels.pth')
-        layer_attns = load_layer_data('layer_attns.pth')
-        print(len(standard_pcas), len(layer_attns))
+        layer_outputs = load_layer_data(os.path.join(load_path, 'layer_outputs.pth'))
+        layer_outputs = [data.requires_grad_(True) for data in layer_outputs]
+        layer_inputs = load_layer_data(os.path.join(load_path, 'layer_inputs.pth'))
+        layer_labels = load_layer_data(os.path.join(load_path, 'layer_labels.pth'))
+        layer_attns = load_layer_data(os.path.join(load_path, 'layer_attns.pth'))
+        print(len(layer_outputs), len(layer_attns))
     
     if replay_decoder:
-        decoder_outputs = load_layer_data('decoder_outputs.pth')
+        decoder_outputs = load_layer_data(os.path.join(load_path, 'decoder_outputs.pth'))
     
     model.to('cuda')
     
@@ -96,13 +97,16 @@ def train(
     for epoch in range(num_epochs):
         model.train()
         """train origin bert (MLM only)"""
+        mse_loss = nn.MSELoss()
+        ce_loss = nn.CrossEntropyLoss()
+        
         losses = []
         for i, batch in enumerate(train_loader):   
             # train on new data
             if train_on_newdata:
                 batch = batch_to_cuda(batch)
                 
-                loss, trash1, trash2 = model(**batch)
+                loss, _, _ = model(**batch)
                 losses.append(accelerator.gather(loss.repeat(config.batch_size)))
                 
                 optimizer.zero_grad()
@@ -115,26 +119,56 @@ def train(
             
             # replay in former 12 layers
             if replay_layerwise:
-                mse_loss = nn.MSELoss()
-                batch_old = {'input_ids': layer_inputs[epoch], 'attention_mask': layer_attns[epoch], 'labels': layer_labels[epoch]}
-                batch_old = batch_to_cuda(batch_old)
-                
-                _, _, layer_outputs = model(**batch_old)
-                
-                batch_old = batch_to_cpu(batch_old)
-                
-                detached_outputs = [output.requires_grad_(True) for output in layer_outputs]            
-                for j, (detached_output, standard_pca) in enumerate(zip(detached_outputs, standard_pcas)):                
+                for l in range(12):      
+                    # update layer              
+                    batch_layer = {'hidden_states': layer_inputs[l], 'attention_mask': layer_attns[l]}
+                    batch_layer = batch_to_cuda(batch_layer)
                     
-                    std_output = standard_pca[epoch * config.batch_size : (epoch+1) * config.batch_size].to('cuda')
-                    pca_loss = mse_loss(detached_output, std_output)         
-                    std_output = std_output.to('cpu')             
-                    # pca_loss *= 1000000
-                    local_optimizer = optim.AdamW(model.bert.layers.layers[j].parameters(), lr=1e-4, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)             
+                    output = model.bert.layers.layers[l](**batch_layer)
+                    
+                    batch_layer = batch_to_cpu(batch_layer)
+                    
+                    output_std = layer_outputs[l].to('cuda')
+                    layer_loss = mse_loss(output, output_std)
+                    
+                    local_optimizer = optim.AdamW(model.bert.layers.layers[l].parameters(), lr=1e-4, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)             
                     local_optimizer.zero_grad()
-                    pca_loss.backward(retain_graph=True)
+                    layer_loss.backward(retain_graph=True)
                     local_optimizer.step()
-                    torch.cuda.empty_cache()
+                    
+                    # update decoder
+                    for k in range(l+1, 12):
+                        batch_ = {'hidden_states': output, 'attention_mask': layer_attns[l]}
+                        batch_ = batch_to_cuda(batch_)
+                        
+                        output = model.bert.layers.layers[k](**batch_)
+                        
+                        batch_ = batch_to_cpu(batch_)
+                        
+                    scores = model.head(output)
+                    
+                    label = layer_labels[l].to('cuda')
+                    mlm_loss = ce_loss(scores.view(-1, config.vocab_size), label.view(-1))
+                    
+                    label = label.to('cpu')
+                    
+                    # Disable gradient computation for all parameters
+                    for param in model.parameters():
+                        param.requires_grad = False
+
+                    # Enable gradient computation only for model.head parameters
+                    for param in model.head.parameters():
+                        param.requires_grad = True
+                    
+                    mlm_optimizer = optim.AdamW(model.head.parameters(), lr=1e-4, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)
+                    mlm_optimizer.zero_grad()
+                    mlm_loss.backward(retain_graph=True)
+                    mlm_optimizer.step()
+                    
+                    for param in model.parameters():
+                        param.requires_grad = True
+                    
+                    
                     
             # replay in the decoder layer
             if replay_decoder:          
@@ -182,4 +216,6 @@ if __name__ == "__main__":
     model.to('cuda')
     # model = nn.DataParallel(model)
     
-    train(model=model, num_epochs=50, dataset=dataset, dataset_pre=dataset_pre)
+    load_path = "./output-0-saveall-1016"
+    
+    train(model=model, num_epochs=50, dataset=dataset, dataset_pre=dataset_pre, load_path=load_path)
