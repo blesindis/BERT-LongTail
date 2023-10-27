@@ -15,7 +15,7 @@ from Dataset import ACLForLM_small, RestaurantForLM_small, Wikitext
 
 
 # Constants and Configurations
-SEED = 45
+SEED = 42
 
 
 def set_seed(seed: int) -> None:
@@ -32,7 +32,7 @@ def parse_arguments():
     
     # Add arguments
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs.')
-    parser.add_argument('--load_path', type=str, default="./output-0-saveall-1016", help='Path to load model parameters.')
+    parser.add_argument('--load_path', type=str, default="./output-0-saveall-1020", help='Path to load model parameters.')
     parser.add_argument('--config_path', type=str, default='config/bert.json', help='Path to BERT config file.')
     parser.add_argument('--train_on_newdata', action='store_true', help='Flag to train on new data.')
     parser.add_argument('--replay_layerwise', action='store_true', help='Flag to replay layer-wise.')
@@ -89,13 +89,16 @@ def train(
     pre_test_loader = dataset_pre.val_loader
     num_updates = num_epochs * len(train_loader)
     
+    checkpoint = torch.load(os.path.join(load_path, 'pytorch_model.bin'))
+    model.load_state_dict(checkpoint)
+    
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)
     lr_scheduler = get_cosine_schedule_with_warmup(optimizer=optimizer, num_warmup_steps=num_updates * 0.1, num_training_steps=num_updates)
     accelerator = Accelerator()
-    writer = SummaryWriter("log/" + 'bert')
+    writer = SummaryWriter("log/1023/" + 'loss*1_decoder')
     
     model, optimizer, lr_scheduler, train_loader, val_loader = accelerator.prepare(model, optimizer, lr_scheduler, train_loader, val_loader)
-    accelerator.load_state(load_path)
+    # accelerator.load_state(load_path)
     
     if replay_layerwise:
         layer_outputs = load_layer_data(os.path.join(load_path, 'layer_outputs.pth'))
@@ -123,20 +126,6 @@ def train(
         
         losses = []
         for i, batch in enumerate(train_loader):   
-            # train on new data
-            if train_on_newdata:
-                batch = batch_to_cuda(batch)
-                
-                loss, _, _ = model(**batch)
-                losses.append(accelerator.gather(loss.repeat(batch_size)))
-                
-                optimizer.zero_grad()
-                accelerator.backward(loss)
-                optimizer.step()
-                lr_scheduler.step()    
-                
-                batch = batch_to_cpu(batch)
-                torch.cuda.empty_cache()
             
             # replay in former 12 layers
             if replay_layerwise:
@@ -155,7 +144,7 @@ def train(
                     local_optimizer = optim.AdamW(model.bert.layers.layers[l].parameters(), lr=1e-4, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)             
                     local_optimizer.zero_grad()
                     layer_loss.backward(retain_graph=True)
-                    local_optimizer.step()
+                    # local_optimizer.step()
                     
                     # update decoder
                     for k in range(l+1, 12):
@@ -173,23 +162,32 @@ def train(
                     
                     label = label.to('cpu')
                     
-                    # Disable gradient computation for all parameters
-                    for param in model.parameters():
-                        param.requires_grad = False
-
-                    # Enable gradient computation only for model.head parameters
-                    for param in model.head.parameters():
-                        param.requires_grad = True
-                    
                     mlm_optimizer = optim.AdamW(model.head.parameters(), lr=1e-4, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)
+                    # ce_optimizer = optim.AdamW(model.bert.layers.layers[l].parameters(), lr=1e-5, weight_decay=0.01, betas=[0.9, 0.999], eps=1e-6)             
+                    
                     mlm_optimizer.zero_grad()
+                    # ce_optimizer.zero_grad()
+                    
                     mlm_loss.backward(retain_graph=True)
+                    
                     mlm_optimizer.step()
+                    # ce_optimizer.step()
+                    local_optimizer.step()
                     
-                    for param in model.parameters():
-                        param.requires_grad = True
-                    
-                    
+            # train on new data
+            if train_on_newdata:
+                batch = batch_to_cuda(batch)
+                
+                loss, _, _ = model(**batch)
+                losses.append(accelerator.gather(loss.repeat(batch_size)))
+                
+                optimizer.zero_grad()
+                accelerator.backward(loss)
+                optimizer.step()
+                lr_scheduler.step()    
+                
+                batch = batch_to_cpu(batch)
+                torch.cuda.empty_cache()
                     
             # replay in the decoder layer
             if replay_decoder:          
