@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
+from scipy.spatial import distance
 from transformers.models.bert.modeling_bert import BertLMPredictionHead
+
+from utils import *
 
 
 class Embeddings(nn.Module):
@@ -123,84 +126,6 @@ class TransformerEncoders(nn.Module):
         return hidden_states
     
     
-class LayerDecoder(nn.Module):
-    def __init__(self, config):
-        super(LayerDecoder, self).__init__()
-        self.config = config        
-        self.decoder = BertLMPredictionHead(config)
-        
-    def forward(self, encoder_output) -> torch.Tensor:
-        decoder_output = self.decoder(encoder_output)
-        return decoder_output
-    
-    
-class BertWithLayerDecoders(nn.Module):
-    def __init__(self, config):
-        super(BertWithLayerDecoders, self).__init__()
-        self.config = config
-        self.encoders = nn.ModuleList([TransformerEncoder(config) for _ in range(config.num_hidden_layers)])
-        self.decoders = nn.ModuleList([LayerDecoder(config) for _ in range(4)])
-    
-    def forward(self, hidden_states, attention_mask) -> torch.Tensor:
-        main_output = hidden_states
-        
-        decoder_outputs = []
-            
-        for i, encoder in enumerate(self.encoders):
-            main_output = encoder(main_output, attention_mask)
-            if i == 0 or i == 3 or i == 6 or i == 9:
-                encoded = main_output.detach()
-                decoded = self.decoders[i//3](encoded)
-                decoder_outputs.append(decoded)
-        
-        main_output = [main_output]
-        outputs = main_output + decoder_outputs
-        
-        return outputs
-    
-   
-class BertWithLayerSavers(nn.Module):
-    def __init__(self, config):
-        super(BertWithLayerSavers, self).__init__()
-        self.layers = nn.ModuleList([TransformerEncoder(config) for _ in range(config.num_hidden_layers)])
-   
-    def forward(self, hidden_states, attention_mask) -> torch.Tensor:
-        layer_outputs = []
-        for i, layer_module in enumerate(self.layers):
-            hidden_states = layer_module(hidden_states, attention_mask)
-            layer_outputs.append(hidden_states)
-        return hidden_states, layer_outputs
-    
-    
-# save the former 12 layers
-class BertLayerSaveModel(nn.Module):
-    def __init__(self, config):
-        super(BertLayerSaveModel, self).__init__()
-        self.embeddings = Embeddings(config)
-        self.layers = BertWithLayerSavers(config)
-        
-    def forward(self, input_ids, attention_mask) -> torch.Tensor:
-        embeddings = self.embeddings(input_ids)
-        outputs, layer_outputs = self.layers(embeddings, attention_mask)
-        
-        embeddings_list = [embeddings]
-        layer_outputs = embeddings_list + layer_outputs # the 1st layer inputs + 12 layer outputs
-        return outputs, layer_outputs
-            
-
-# add a decoder after each layer 
-class BertDecoderModel(nn.Module):
-    def __init__(self, config):
-        super(BertDecoderModel, self).__init__()
-        self.embeddings = Embeddings(config)
-        self.layers = BertWithLayerDecoders(config)
-        
-    def forward(self, input_ids, attention_mask) -> torch.Tensor:
-        embeddings = self.embeddings(input_ids)
-        outputs = self.layers(embeddings, attention_mask)
-        return outputs
-    
-    
 # tradition bert
 class BertModel(nn.Module):
     def __init__(self, config):
@@ -212,3 +137,53 @@ class BertModel(nn.Module):
         embeddings = self.embeddings(input_ids)
         output = self.encoders(embeddings, attention_mask)
         return output
+
+
+class Experts(nn.Module):
+    def __init__(self, config, centers):
+        super(Experts, self).__init__()
+        self.config = config
+        self.experts = nn.ModuleList([TransformerEncoder(config) for _ in range(config.num_experts)])
+        self.centers = centers
+        
+    def routing(self, hidden_states):
+        cluster_list = [[] for _ in range(self.config.num_experts)]
+        
+        h_pca = pca(hidden_states.detach(), n_components=16)
+        dist = torch.cdist(h_pca.double(), self.centers.double())
+        _, min_indices = torch.min(dist, dim=1)
+        for i, cluster_index in enumerate(min_indices):
+            cluster_list[cluster_index.item()].append(i)
+            
+        return cluster_list
+    
+    def forward(self, hidden_states, attention_mask):
+        output = hidden_states.new_zeros(hidden_states.shape)        
+        cluster_list = self.routing(hidden_states)
+        for i in range(self.config.num_experts):
+            output[cluster_list[i], :, :] = self.experts[i](hidden_states[cluster_list[i], :, :], attention_mask[cluster_list[i], :])
+        return output
+
+
+class BertMOE(nn.Module):
+    def __init__(self, config, centers):
+        super(BertMOE, self).__init__()
+        self.layers = nn.ModuleList([Experts(config, centers[i]) for i in range(config.num_hidden_layers)])
+        
+    def forward(self, hidden_states, attention_mask):
+        for i, layer in enumerate(self.layers):
+            hidden_states = layer(hidden_states, attention_mask)
+        return hidden_states
+
+
+# Bert with moe
+class BertMOEModel(nn.Module):
+    def __init__(self, config, centers):
+        super(BertMOEModel, self).__init__()
+        self.embeddings = Embeddings(config)
+        self.layers = BertMOE(config, centers)
+        
+    def forward(self, input_ids, attention_mask):
+        embeddings = self.embeddings(input_ids)
+        outputs = self.layers(embeddings, attention_mask)
+        return outputs
