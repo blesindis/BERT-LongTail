@@ -24,7 +24,7 @@ def parse_arguments():
     # Add arguments
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs.')
     parser.add_argument('--load_path', type=str, default="1027-mixed-warmup", help='Path to load model parameters.')
-    parser.add_argument('--store_path', type=str, default="1027-mixed-no-warmup", help='Path to store model parameters.')
+    parser.add_argument('--store_path', type=str, default="1101-mixed-pca-projection", help='Path to store model parameters.')
     parser.add_argument('--config_path', type=str, default='config/bert.json', help='Path to BERT config file.')
     
     return parser.parse_args()
@@ -48,7 +48,7 @@ def validate(model, val_loader, accelerator):
 def load_layer_data(path):
     layer_data_dict = torch.load(path, map_location='cuda')
     layer_data = list(layer_data_dict.values())
-    layer_data = torch.tensor(np.array(layer_data))
+    layer_data = torch.tensor(np.array(layer_data)).to('cuda')
     return layer_data
 
 
@@ -69,10 +69,13 @@ def main():
     
     dataset = MixedData(config, dataset_len=DATASET_SIZE)
     centers = load_layer_data(os.path.join('outputs', load_path, 'centers.pth'))
+    layer_data_dict = torch.load(os.path.join('outputs', load_path, 'pca_components_cluster.pth'), map_location='cuda')
+    layer_data = list(layer_data_dict.values())
+    pca_components = torch.cat(layer_data, dim=0).view(len(layer_data), *layer_data[0].shape)
     
-    model = base_models.BertWithMOE(config, centers=centers)
+    model = base_models.BertWithMOE(config, centers, pca_components)
     
-    train_loader, val_loader, val_loader_set = dataset.train_loader, dataset.val_loader, dataset.val_loader_set
+    train_loader, val_loader = dataset.train_loader, dataset.val_loader
     num_updates = num_epochs * len(train_loader)
     
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0., betas=[0.9, 0.999], eps=1e-6)
@@ -93,10 +96,7 @@ def main():
         for j in range(config.num_experts):
             copy_parameters(model_warmup.bert.encoders.layers[i], model.bert.layers.layers[i].experts[j])
     
-    model, optimizer, lr_scheduler, train_loader, val_loader = accelerator.prepare(model, optimizer, lr_scheduler, train_loader, val_loader)
-    
-    for i, set in enumerate(val_loader_set):
-        val_loader_set[i] = accelerator.prepare(set)
+    model, optimizer, lr_scheduler, train_loader, val_loader = accelerator.prepare(model, optimizer, lr_scheduler, train_loader, val_loader)        
     
     
     # train
@@ -115,11 +115,7 @@ def main():
 
         loss_train = torch.mean(torch.cat(losses)[:len(train_loader.dataset)])
         loss_valid = validate(model, val_loader, accelerator)
-        accelerator.print(f'Epoch:{epoch} ({i} Updates), Train Loss: {loss_train}, Valid Loss: {loss_valid}')
-        
-        for index, val_set in enumerate(val_loader_set):
-            loss_valid_per_set = validate(model, val_set, accelerator)
-            accelerator.print(f'Dataset: {index}, Valid Loss: {loss_valid_per_set}')
+        accelerator.print(f'Epoch:{epoch} ({i} Updates), Train Loss: {loss_train}, Valid Loss: {loss_valid}')                
 
         writer.add_scalar('perplexity_train_epoch', loss_train, epoch)
         writer.add_scalar('perplexity_valid', loss_valid, epoch)

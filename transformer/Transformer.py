@@ -140,16 +140,18 @@ class BertModel(nn.Module):
 
 
 class Experts(nn.Module):
-    def __init__(self, config, centers):
+    def __init__(self, config, centers, components):
         super(Experts, self).__init__()
         self.config = config
         self.experts = nn.ModuleList([TransformerEncoder(config) for _ in range(config.num_experts)])
         self.centers = centers
+        self.components = components
         
     def routing(self, hidden_states):
         cluster_list = [[] for _ in range(self.config.num_experts)]
         
-        h_pca = pca(hidden_states.detach(), n_components=16)
+        # h_pca = pca(hidden_states.detach(), n_components=16)
+        h_pca = torch.matmul(hidden_states.mean(dim=1), self.components.T)
         dist = torch.cdist(h_pca.double(), self.centers.double())
         _, min_indices = torch.min(dist, dim=1)
         for i, cluster_index in enumerate(min_indices):
@@ -166,9 +168,9 @@ class Experts(nn.Module):
 
 
 class BertMOE(nn.Module):
-    def __init__(self, config, centers):
+    def __init__(self, config, centers, components):
         super(BertMOE, self).__init__()
-        self.layers = nn.ModuleList([Experts(config, centers[i]) for i in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([Experts(config, centers[i], components[i]) for i in range(config.num_hidden_layers)])
         
     def forward(self, hidden_states, attention_mask):
         for i, layer in enumerate(self.layers):
@@ -178,10 +180,10 @@ class BertMOE(nn.Module):
 
 # Bert with moe
 class BertMOEModel(nn.Module):
-    def __init__(self, config, centers):
+    def __init__(self, config, centers, components):
         super(BertMOEModel, self).__init__()
         self.embeddings = Embeddings(config)
-        self.layers = BertMOE(config, centers)
+        self.layers = BertMOE(config, centers, components)
         
     def forward(self, input_ids, attention_mask):
         embeddings = self.embeddings(input_ids)

@@ -35,10 +35,10 @@ class BertForMLM(nn.Module):
        
     
 class BertWithMOE(nn.Module):
-    def __init__(self, config, centers):
+    def __init__(self, config, centers, components):
         super(BertWithMOE, self).__init__()
         self.config = config        
-        self.bert = BertMOEModel(config, centers)
+        self.bert = BertMOEModel(config, centers, components)
         self.head = BertOnlyMLMHead(config)
         self.criterion = nn.CrossEntropyLoss() 
         self.apply(self._init_weights)
