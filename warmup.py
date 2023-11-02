@@ -20,7 +20,7 @@ SEED = 42
 WARMUP_SIZE = 2000
 
 LOAD_CHECKPOINT = True
-DIM_EXPERT = True
+DIM_EXPERT = False
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -148,15 +148,18 @@ def main():
             
         else:
             layer_pca = pca(layer_output, n_components=16)
+            layer_pca, components = pca_components(layer_output, n_components=16)
             _, cluster_centers = cluster_kmeans(layer_pca, config.num_experts)
             layer_cluster_centers['layer' + str(j)] = cluster_centers
+            layer_pca_components['layer' + str(j)] = components
         
             
     if DIM_EXPERT:
         torch.save(layer_pca_components, os.path.join('outputs', store_path, 'pca_components.pth'))
         torch.save(layer_unique_centers, os.path.join('outputs', store_path, 'unique_centers.pth'))
-    else:
+    else:        
         torch.save(layer_cluster_centers, os.path.join('outputs', store_path, 'centers.pth'))
+        torch.save(layer_pca_components, os.path.join('outputs', store_path, 'pca_components_cluster.pth'))
     
 
 if __name__ == "__main__":
