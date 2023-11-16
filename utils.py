@@ -67,6 +67,38 @@ def pca_components(input, n_components=-1, threshold=0.80):
     return X_pca_efficient, components
 
 
+def find_elbow(X, K_range):
+    distortions = []
+    for k in K_range:
+        kmeans = KMeans(n_clusters=k).fit(X)
+        distortions.append(kmeans.inertia_)
+
+    # Calculate the differences between consecutive distortions
+    diffs = np.diff(distortions)
+
+    # Calculate the differences of the differences
+    diff_diffs = np.diff(diffs)
+
+    # Find the "elbow" point
+    optimal_k = K_range[np.argmin(diff_diffs) + 1] # +1 because we are using the difference of differences
+    return optimal_k
+
+
+def cluster_kmeans_auto(X_pca):
+    K_range = range(1, 10)
+    optimal_k = find_elbow(X_pca, K_range)
+    print(optimal_k)
+    
+    kmeans = KMeans(n_clusters=optimal_k)
+    kmeans.fit_predict(X_pca)
+    
+    labels = kmeans.labels_
+    centers = kmeans.cluster_centers_
+    cluster_indexes = [torch.eq(torch.tensor(labels), i).nonzero(as_tuple=True)[0] for i in range(optimal_k)]
+
+    return cluster_indexes, centers
+
+
 def cluster_kmeans(X_pca, k):
     kmeans = KMeans(n_clusters=k)
     kmeans.fit_predict(X_pca)
@@ -93,3 +125,15 @@ def sample_by_cluster(X_pca, k, n_samples):
         sample_indexes = np.concatenate((sample_indexes, nearest_indices))
         
     return sample_indexes
+
+
+def get_cluster_labels(cluster_list):
+    # return a tensor, where each element indicates the cluster of data with current index
+    num_data = sum(len(sublist) for sublist in cluster_list)
+    cluster_labels = torch.zeros((num_data, 1))
+    
+    for i, sublist in enumerate(cluster_list):
+        for element in sublist:
+            cluster_labels[element] = i
+    
+    return cluster_labels
