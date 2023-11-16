@@ -140,18 +140,18 @@ class BertModel(nn.Module):
 
 
 class Experts(nn.Module):
-    def __init__(self, config, centers, components):
+    def __init__(self, config, centers):
         super(Experts, self).__init__()
         self.config = config
         self.experts = nn.ModuleList([TransformerEncoder(config) for _ in range(config.num_experts)])
-        self.centers = centers
-        self.components = components
+        self.centers = centers        
         
     def routing(self, hidden_states):
         cluster_list = [[] for _ in range(self.config.num_experts)]
         
         # h_pca = pca(hidden_states.detach(), n_components=16)
-        h_pca = torch.matmul(hidden_states.mean(dim=1), self.components.T)
+        # h_pca = torch.matmul(hidden_states.mean(dim=1), self.components.T)
+        h_pca = hidden_states.mean(dim=1)
         dist = torch.cdist(h_pca.double(), self.centers.double())
         _, min_indices = torch.min(dist, dim=1)
         for i, cluster_index in enumerate(min_indices):
@@ -168,9 +168,9 @@ class Experts(nn.Module):
 
 
 class BertMOE(nn.Module):
-    def __init__(self, config, centers, components):
+    def __init__(self, config, centers):
         super(BertMOE, self).__init__()
-        self.layers = nn.ModuleList([Experts(config, centers[i], components[i]) for i in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([Experts(config, centers[i]) for i in range(config.num_hidden_layers)])
         
     def forward(self, hidden_states, attention_mask):
         for i, layer in enumerate(self.layers):
@@ -180,150 +180,10 @@ class BertMOE(nn.Module):
 
 # Bert with moe
 class BertMOEModel(nn.Module):
-    def __init__(self, config, centers, components):
+    def __init__(self, config, centers):
         super(BertMOEModel, self).__init__()
         self.embeddings = Embeddings(config)
-        self.layers = BertMOE(config, centers, components)
-        
-    def forward(self, input_ids, attention_mask):
-        embeddings = self.embeddings(input_ids)
-        outputs = self.layers(embeddings, attention_mask)
-        return outputs
-    
-    
-class DimMHSA(nn.Module):
-    def __init__(self, config, n_components):
-        super(DimMHSA, self).__init__()
-        self.config = config
-        self.attention_head_size = int(n_components / config.num_attention_heads)
-        self.num_attention_heads = config.num_attention_heads
-        
-        self.input_dim = n_components
-        self.heads = nn.ModuleList([nn.Linear(self.input_dim, self.attention_head_size * 3, bias=False) for _ in range(self.num_attention_heads)])
-        self.scale_factor = self.input_dim ** -0.5  # 1/np.sqrt(dim)
-        self.softmax = nn.Softmax(dim=-1)
-
-        # self.head_mask = [1] * self.num_attention_heads
-    
-    def forward(self, hidden_states: torch.Tensor, attention_mask):        
-        qkv = torch.stack([self.heads[h](hidden_states) for h in range(self.num_attention_heads)])
-        # qkv = torch.stack([self.heads[h](hidden_states) * self.head_mask[h] for h in range(self.num_attention_heads)])
-        # batch_size, seq_len, _ = hidden_states.shape
-        # qkv = torch.stack([
-        #     self.heads[h](hidden_states) if self.head_mask[h] else hidden_states.new_zeros((batch_size, seq_len, self.attention_head_size * 3))
-        #     for h in range(self.num_attention_heads)
-        # ])
-        q, k, v = tuple(rearrange(qkv, 'h b n (k d) -> k b h n d', k=3))
-
-        scaled_dot_prod = torch.einsum('... i d , ... j d -> ... i j', q, k) * self.scale_factor
-        scaled_dot_prod = scaled_dot_prod.masked_fill(attention_mask[:, None, None, :] == 0, -torch.inf)
-        attention = self.softmax(scaled_dot_prod)
-        self.attention = attention
-
-        # batch_size, num_head, seq_len, head_dim
-        result = torch.einsum('... i j , ... j d -> ... i d', attention, v)
-        result = rearrange(result, "b h n d -> b n (h d)")
-        return result
-    
-    
-class DimAttention(nn.Module):
-    def __init__(self, config, n_components):
-        super(DimAttention, self).__init__()
-        self.self = DimMHSA(config, n_components)
-        self.dense = nn.Linear(n_components, n_components)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.LayerNorm = nn.LayerNorm(n_components, eps=config.layer_norm_eps)
-
-    def forward(self, input_tensor, attention_mask):
-        hidden_states = self.self(input_tensor, attention_mask)
-        hidden_states = self.dense(hidden_states)
-        hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        return hidden_states
-    
-    
-class DimFeedForward(nn.Module):
-    def __init__(self, config, n_components):
-        super(DimFeedForward, self).__init__()
-        self.config = config
-        self.dense_1 = nn.Linear(n_components, n_components)
-        self.intermediate_act_fn = nn.GELU()
-        self.dense_2 = nn.Linear(n_components, n_components)
-    
-    def forward(self, hidden_states):
-        hidden_states = self.dense_1(hidden_states)
-        hidden_states = self.intermediate_act_fn(hidden_states)
-        hidden_states = self.dense_2(hidden_states)
-        return hidden_states
-    
-    
-class DimExpert(nn.Module):
-    def __init__(self, config, n_components):
-        super(DimExpert, self).__init__()
-        self.attention = DimAttention(config, n_components)
-        self.ffn = DimFeedForward(config, n_components)
-        self.LayerNorm = nn.LayerNorm(n_components, eps=config.layer_norm_eps)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-    
-    def forward(self, hidden_states, attention_mask):
-        att_output = self.attention(hidden_states, attention_mask)
-        ffn_output = self.ffn(att_output)
-        ffn_output = self.dropout(ffn_output)
-        output = self.LayerNorm(att_output + ffn_output)
-        return output
-    
-    
-class DimExperts(nn.Module):
-    def __init__(self, config, unique_centers, components):
-        super(DimExperts, self).__init__()
-        self.config = config
-        self.n_components = 16
-        self.common_expert = DimExpert(config, config.hidden_size - self.n_components)
-        self.unique_experts = nn.ModuleList([DimExpert(config, self.n_components) for _ in range(config.num_experts)])
-        self.unique_centers = unique_centers
-        self.components = components
-        
-    def routing(self, hidden_states):
-        cluster_list = [[] for _ in range(self.config.num_experts)]
-        
-        dist = torch.cdist(hidden_states.double(), self.unique_centers.double())
-        _, min_indices = torch.min(dist, dim=1)
-        for i, idx in enumerate(min_indices):
-            cluster_list[idx.item()].append(i)
-            
-        return cluster_list
-    
-    def forward(self, hidden_states, attention_mask):
-        common_h = torch.matmul(hidden_states, self.components[self.n_components:].T)        
-        unique_h = torch.matmul(hidden_states, self.components[:self.n_components].T)        
-        
-        common_output = self.common_expert(common_h, attention_mask)
-        
-        unique_output = unique_h.new_zeros(unique_h.shape)
-        unique_cluster_list = self.routing(unique_h.mean(dim=1))
-        for i in range(self.config.num_experts):
-            unique_output[unique_cluster_list[i], :, :] = self.unique_experts[i](unique_h[unique_cluster_list[i], :, :], attention_mask[unique_cluster_list[i], :])
-        
-        output = torch.cat([unique_output, common_output], dim=-1)
-        return output
-        
-          
-class BertDimMOE(nn.Module):
-    def __init__(self, config, unique_centers, components):
-        super(BertDimMOE, self).__init__()
-        self.layers = nn.ModuleList([DimExperts(config, unique_centers[i], components[i]) for i in range(config.num_hidden_layers)])
-        
-    def forward(self, hidden_states, attention_mask):
-        for i, layer in enumerate(self.layers):
-            hidden_states = layer(hidden_states, attention_mask)
-        return hidden_states
-    
-    
-class BertDimMOEModel(nn.Module):
-    def __init__(self, config, unique_centers, components):
-        super(BertDimMOEModel, self).__init__()
-        self.embeddings = Embeddings(config)
-        self.layers = BertDimMOE(config, unique_centers, components)
+        self.layers = BertMOE(config, centers)
         
     def forward(self, input_ids, attention_mask):
         embeddings = self.embeddings(input_ids)
