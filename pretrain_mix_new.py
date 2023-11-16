@@ -15,7 +15,12 @@ from Dataset import MixedData, ACLForLM
 
 
 DATASET_SIZE = 10000
-REPLAY = False
+REPLAY = True
+EWC = False
+NEW_CENTER = False
+LAMBDA = 1000
+
+LOAD_CHECKPOINT=True
 
 
 def parse_arguments():
@@ -24,8 +29,8 @@ def parse_arguments():
     
     # Add arguments
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs.')
-    parser.add_argument('--load_path', type=str, default="1027-mixed", help='Path to load model parameters.')
-    parser.add_argument('--store_path', type=str, default="1031-mixed-new-noreplay", help='Path to store model parameters.')
+    parser.add_argument('--load_path', type=str, default="1102-mixed-stage1", help='Path to load model parameters.')
+    parser.add_argument('--store_path', type=str, default="1102-mixed-stage2-replay-4*16", help='Path to store model parameters.')
     parser.add_argument('--config_path', type=str, default='config/bert.json', help='Path to BERT config file.')
     
     return parser.parse_args()
@@ -49,13 +54,21 @@ def validate(model, val_loader, accelerator):
 def load_layer_data(path):
     layer_data_dict = torch.load(path, map_location='cuda')
     layer_data = list(layer_data_dict.values())
-    layer_data = torch.tensor(np.array(layer_data))
+    layer_data = torch.tensor(np.array(layer_data)).to('cuda')
     return layer_data
 
 
 def copy_parameters(source_module, target_module):
     for source_param, target_param in zip(source_module.parameters(), target_module.parameters()):
         target_param.data.copy_(source_param.data)
+        
+        
+def ewc(model, original_model, fisher_information, lambda_):
+    loss = 0
+    original_model_params = {name: param.clone() for name, param in original_model.named_parameters()}
+    for name, param in model.named_parameters():
+        loss += (fisher_information[name] * (param - original_model_params[name]) ** 2).sum()
+    return lambda_ * loss
 
 
 def main():
@@ -71,22 +84,35 @@ def main():
     dataset = ACLForLM(config, dataset_len=DATASET_SIZE)
     dataset_old = MixedData(config, dataset_len=DATASET_SIZE)
     
-    # new center
-    centers = load_layer_data(os.path.join('outputs', load_path, 'new_centers.pth'))
-    centers = torch.squeeze(centers, 2)
+    if NEW_CENTER:
+        centers = load_layer_data(os.path.join('outputs', load_path, 'new_centers.pth'))
+        centers = torch.squeeze(centers, 2)
+    else:
+        centers = load_layer_data(os.path.join('outputs', '1027-mixed-warmup', 'centers.pth'))
     
-    # old center
-    # centers = load_layer_data(os.path.join('outputs', '1027-mixed-warmup', 'centers.pth'))
     
     if REPLAY:
         layer_data_dict = torch.load(os.path.join('outputs', load_path, 'sample_inputs.pth'), map_location='cuda')
         sample_inputs = list(layer_data_dict.values())
         layer_data_dict = torch.load(os.path.join('outputs', load_path, 'sample_outputs.pth'), map_location='cuda')
         sample_outputs = list(layer_data_dict.values())
+        
+    if EWC:
+        layer_data_dict = torch.load(os.path.join('outputs', load_path, 'FIM.pth'), map_location='cuda')
+        fisher_information = list(layer_data_dict.values())                
     
-    model = base_models.BertWithMOE(config, centers=centers)
-    checkpoint = torch.load(os.path.join('outputs', load_path, 'pytorch_model.bin'))
-    model.load_state_dict(checkpoint)
+    model = base_models.BertWithMOE(config, centers)
+    if LOAD_CHECKPOINT:
+        checkpoint = torch.load(os.path.join('outputs', store_path, 'pytorch_model.bin'))
+        model.load_state_dict(checkpoint)
+    else:
+        checkpoint = torch.load(os.path.join('outputs', load_path, 'pytorch_model.bin'))
+        model.load_state_dict(checkpoint)
+    
+    if EWC:
+        model_origin = base_models.BertWithMOE(config, centers)
+        checkpoint = torch.load(os.path.join('outputs', load_path, 'pytorch_model.bin'))
+        model.load_state_dict(checkpoint)
     
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     val_loader_old = dataset_old.val_loader
@@ -98,9 +124,8 @@ def main():
     writer = SummaryWriter(os.path.join('log', store_path))
     
     model, optimizer, lr_scheduler, train_loader, val_loader, val_loader_old = accelerator.prepare(model, optimizer, lr_scheduler, train_loader, val_loader, val_loader_old)
-    
-    loss_valid_old = validate(model, val_loader_old, accelerator) 
-    print(f'Valid Loss After Updating Centers: {loss_valid_old}')
+    if EWC:
+        model_origin = accelerator.prepare(model_origin)
     
     # train
     for epoch in range(num_epochs):
@@ -108,18 +133,24 @@ def main():
         
         mse_loss = nn.MSELoss()
         
-        
         # train new data
         losses = []
-        for i, batch in enumerate(train_loader):            
+        for i, batch in enumerate(train_loader):       
+            print(i)     
             loss, _ = model(**batch)
             losses.append(accelerator.gather(loss.repeat(config.batch_size)))
             
+            if EWC:
+                for j in range(config.num_hidden_layers):
+                    for k in range(config.num_experts):
+                        ewc_loss = ewc(model.bert.layers.layers[j].experts[k], model_origin.bert.layers.layers[j].experts[k], fisher_information[j][k], LAMBDA)
+                        loss += ewc_loss
+                        
             optimizer.zero_grad()
             accelerator.backward(loss)
             optimizer.step()
             lr_scheduler.step()  
-            
+                        
             # replay layerwise by cluster
             if REPLAY:
                 for j in range(config.num_hidden_layers):
@@ -134,7 +165,6 @@ def main():
                         layer_loss.backward(retain_graph=True)
                         local_optimizer.step()
                         
-            
         # train old data
 
         loss_train = torch.mean(torch.cat(losses)[:len(train_loader.dataset)])
