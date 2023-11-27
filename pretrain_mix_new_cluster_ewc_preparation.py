@@ -36,25 +36,6 @@ lr = 1e-3
 weight_decay = 0
 
 
-def compute_fisher_information(model, inputs, outputs_std, criterion, num_layer, num_expert):
-    model.eval()
-    fisher_information = {}
-    for name, param in model.bert.layers.layers[num_layer].experts[num_expert].named_parameters():
-        fisher_information[name] = torch.zeros_like(param)
-    
-    
-    model.zero_grad()
-    output = model.bert.layers.layers[num_layer].experts[num_expert](inputs, torch.ones(inputs.shape[0], inputs.shape[1]).to('cuda'))
-    loss = criterion(outputs_std, output)
-    loss.backward()
-        
-    with torch.no_grad():
-        for name, param in model.bert.layers.layers[num_layer].experts[num_expert].named_parameters():
-            fisher_information[name] += param.grad ** 2 / len(inputs)
-                
-    return fisher_information
-
-
 def main():
     
     config = BertConfig.from_json_file(CONFIG_PATH)

@@ -17,7 +17,7 @@ from utils.train_utils import (
 )
 from Dataset import MixedData, ACLForLM
 
-LAMBDA = 500
+LAMBDA = 1000
 
 # train and validation size for pretrain
 TRAIN_LEN = 10000
@@ -28,11 +28,11 @@ LOAD_FOLDER = "1102-mixed-stage1"
 LOAD_PATH = os.path.join('outputs', LOAD_FOLDER)
 CENTER_FILE = 'centers.pth'
 CENTER_PATH = os.path.join(LOAD_PATH, CENTER_FILE)
-FIM_FILE = 'fim.pth'
+FIM_FILE = 'fim-1.pth'
 FIM_PATH = os.path.join(LOAD_PATH, FIM_FILE)
 CONFIG_PATH = 'config/bert.json'
 
-STORE_FOLDER = '1116-mixed-stage2-ewc-5000(1102-mixed-stage1)'
+STORE_FOLDER = '1121-mixed-stage2-ewc-1000(1102-mixed-stage1)'
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 
 # training parameters
@@ -45,9 +45,8 @@ def ewc(model, original_model, fim):
     loss = 0
     original_model_params = {name: param.clone() for name, param in original_model.named_parameters()}
     for name, param in model.named_parameters():
-        # loss += (fim[name] * (param - original_model_params[name]) ** 2).sum()
-        param.grad *= fim[name]
-    # return LAMBDA * loss
+        loss += (fim[name] * (param - original_model_params[name]) ** 2).sum()        
+    return LAMBDA * loss
 
 
 def normalize_fim(fim):    
@@ -68,7 +67,7 @@ def main():
     centers = load_layer_data(CENTER_PATH)
     
     fim = torch.load(FIM_PATH, map_location='cuda')    
-    fim = normalize_fim(fim)
+    # fim = normalize_fim(fim)
     
     model = base_models.BertWithMOE(config, centers)
     checkpoint = torch.load(os.path.join(LOAD_PATH, 'pytorch_model.bin'))
@@ -103,12 +102,12 @@ def main():
                         
             optimizer.zero_grad()
             accelerator.backward(loss)
-            optimizer.step()
-                        
-            ewc(model, model_origin, fim)
-            # optimizer.zero_grad()
-            # ewc_loss.backward()
             # optimizer.step()
+                        
+            ewc_loss = ewc(model, model_origin, fim)
+            # optimizer.zero_grad()
+            ewc_loss.backward()
+            optimizer.step()
                         
             lr_scheduler.step()  
 
