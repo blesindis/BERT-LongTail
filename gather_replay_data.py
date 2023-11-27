@@ -1,4 +1,5 @@
 import os
+import math
 import numpy as np
 import torch
 import torch.optim as optim
@@ -8,11 +9,18 @@ from transformers import BertConfig
 
 # Local imports
 import base_models
-from utils import *
+from utils.sample_utils import *
+from utils.train_utils import (
+    validate,
+    load_layer_data,
+)
 from Dataset import MixedData, ACLForLM
 
 # cluster config
 SAMPLE_BATCHES = 100
+NUM_CLUSTERS = 2
+TOTAL_DATA = 384
+NUM_PATHS = 50
 
 # train and validation size for pretrain
 TRAIN_LEN = 10000
@@ -25,27 +33,13 @@ STORE_FOLDER = '1102-mixed-stage1'
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 CENTER_FILE = 'centers.pth'
 CENTER_PATH = os.path.join(LOAD_PATH, CENTER_FILE)
-REPLAY_FILE = 'replay_dynamic_100.pth'
+REPLAY_FILE = 'replay_path_samples.pth'
 REPLAY_PATH = os.path.join(STORE_PATH, REPLAY_FILE)
 CONFIG_PATH = 'config/bert.json'
 
 # training config
 lr = 1e-3
 weight_decay = 0
-
-
-def validate(model, val_loader, accelerator):
-    losses = []
-    print(len(val_loader))
-    for i, batch in enumerate(val_loader):    
-        with torch.no_grad():
-            loss, _ = model(**batch)
-        losses.append(accelerator.gather(loss.repeat(len(batch))))
-    
-    losses = torch.cat(losses)[:len(val_loader.dataset)]
-    loss = torch.mean(losses)
-    
-    return loss
 
 
 def validate_batch(model, inputs, labels):
@@ -57,13 +51,6 @@ def validate_batch(model, inputs, labels):
                 
     # loss = torch.mean(loss)
     return torch.tensor(losses) 
-
-
-def load_layer_data(path):
-    layer_data_dict = torch.load(path, map_location='cuda')
-    layer_data = list(layer_data_dict.values())    
-    layer_data = torch.tensor(np.array(layer_data)).to('cuda')
-    return layer_data
 
 
 def get_cluster_labels(cluster_list):
@@ -124,8 +111,9 @@ def main():
                 if path in path_dict:
                     path_dict[path]['input_ids'] = torch.cat((path_dict[path]['input_ids'], batch['input_ids'][l].unsqueeze(0)), dim=0)
                     path_dict[path]['labels'] = torch.cat((path_dict[path]['labels'], batch['labels'][l].unsqueeze(0)), dim=0)
+                    path_dict[path]['last_layer_outputs'] = torch.cat((path_dict[path]['last_layer_outputs'], h_[l].unsqueeze(0)), dim=0)                    
                 else:
-                    path_dict[path] = {'input_ids': batch['input_ids'][l].unsqueeze(0), 'labels': batch['labels'][l].unsqueeze(0)}
+                    path_dict[path] = {'input_ids': batch['input_ids'][l].unsqueeze(0), 'labels': batch['labels'][l].unsqueeze(0), 'last_layer_outputs': h_[l].unsqueeze(0)}
                     
             
             if i == 0:
@@ -135,7 +123,35 @@ def main():
             batch = {key: tensor.to('cpu') for key, tensor in batch.items()}
 
     print("Number of total paths: ", len(path_dict))    
-    torch.save(path_dict, REPLAY_PATH)    
+    # for value in path_dict.values():        
+    #     print(len(value['input_ids']))
+    # torch.save(path_dict, REPLAY_PATH)    
+    
+    sorted_path_dict = dict(sorted(path_dict.items(), key=lambda x: len(x[1]['input_ids']), reverse=True))
+    input_ids = []
+    labels = []
+    sum = 0
+    for i, v in enumerate(sorted_path_dict.values()):
+        if i > NUM_PATHS:
+            break
+        sum += len(v['input_ids'])
+        
+    for i, v in enumerate(sorted_path_dict.values()):
+        if i > NUM_PATHS:
+            break
+        j = math.ceil(len(v['input_ids']) / sum * TOTAL_DATA / NUM_CLUSTERS)
+        if j:
+            sample_indexes = sample_by_cluster(v['last_layer_outputs'].cpu().numpy().mean(axis=1), NUM_CLUSTERS, j)
+            input_ids.append(v['input_ids'][sample_indexes])
+            labels.append(v['labels'][sample_indexes])
+    
+    input_ids = torch.cat(input_ids, dim=0)
+    labels = torch.cat(labels, dim=0)
+    
+    print(f'len data:{len(input_ids)}')
+    shuffled_indices = torch.randperm(input_ids.shape[0])
+    replay_path_samples = {'input_ids': input_ids[shuffled_indices], 'labels': labels[shuffled_indices], 'attention_mask': torch.ones(input_ids.shape[:2])}
+    torch.save(replay_path_samples, REPLAY_PATH)
     
     # """Select a batch for single batch replay"""
     # max_path = None
