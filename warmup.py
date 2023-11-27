@@ -12,10 +12,10 @@ from transformers import BertConfig, get_cosine_schedule_with_warmup
 # Local imports
 import base_models
 from Dataset import MixedData, ACLForLM
-from utils import *
-
-
-SEED = 42
+from utils.sample_utils import *
+from utils.train_utils import (
+    validate,
+)
 
 LOAD_CHECKPOINT = True
 
@@ -40,30 +40,7 @@ lr = 1e-4
 weight_decay = 0
 
 
-def set_seed(seed: int) -> None:
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-
-
-def validate(model, val_loader, accelerator):
-    losses = []
-    for i, batch in enumerate(val_loader):        
-        with torch.no_grad():
-            loss, _ = model(**batch)
-        losses.append(accelerator.gather(loss.repeat(len(batch))))
-    
-    losses = torch.cat(losses)[:len(val_loader.dataset)]
-    loss = torch.mean(losses)
-    
-    return loss
-    
-
 def main():
-    set_seed(SEED)
-       
     config = BertConfig.from_json_file(CONFIG_PATH)
     dataset = MixedData(config=config, train_len=TRAIN_LEN, val_len=VAL_LEN)
     

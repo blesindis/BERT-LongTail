@@ -11,12 +11,16 @@ from transformers import BertConfig, get_cosine_schedule_with_warmup
 
 # Local imports
 import base_models
-from utils import *
+from utils.sample_utils import *
+from utils.train_utils import (
+    validate,
+    load_layer_data,
+)
 from Dataset import MixedData, ACLForLM
 
 # replay
 REPLAY = True
-DATA_PER_PATH = 10
+DATA_PER_PATH = 1
 STEP = 50
 
 # train and validation size for pretrain
@@ -32,35 +36,13 @@ REPLAY_FILE = 'replay_dynamic_100.pth'
 REPLAY_PATH = os.path.join(LOAD_PATH, REPLAY_FILE)
 CONFIG_PATH = 'config/bert.json'
 
-STORE_FOLDER = '1114-mixed-stage2-replay-path-dynamic-step50-10*(1102-mixed-stage1)'
+STORE_FOLDER = '1121-mixed-stage2-replay-path-dynamic-step50-loss*10(1102-mixed-stage1)'
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 
 # training parameters
 num_epochs = 50
 lr = 1e-4
 weight_decay = 0
-
-
-def validate(model, val_loader, accelerator):
-    losses = []
-    print(len(val_loader))
-    for i, batch in enumerate(val_loader):    
-        with torch.no_grad():
-            loss, _ = model(**batch)
-        losses.append(accelerator.gather(loss.repeat(len(batch))))
-    
-    losses = torch.cat(losses)[:len(val_loader.dataset)]
-    loss = torch.mean(losses)
-    
-    return loss
-
-
-def load_layer_data(path):
-    layer_data_dict = torch.load(path, map_location='cuda')
-    layer_data = list(layer_data_dict.values())
-    layer_data = torch.tensor(np.array(layer_data)).to('cuda')
-    return layer_data
-        
 
 
 def main():
@@ -93,13 +75,13 @@ def main():
     
     # train
     replay_rate_epoch = 0
-    replay_effective = {}
-    step = 20
+    replay_effective = {}    
     for epoch in range(num_epochs):
         model.train()
                 
         losses = []
         replay_rate_batch = 0
+        len_path = 0
         for i, batch in enumerate(train_loader):      
             # forward layer by layer to get center path
             h_ = model.bert.embeddings(batch['input_ids'])
@@ -122,8 +104,6 @@ def main():
                         
             optimizer.zero_grad()
             accelerator.backward(loss)
-            optimizer.step()
-            # lr_scheduler.step()  
                         
             # replay layerwise by path
             loss = 0
@@ -132,40 +112,38 @@ def main():
                     replay_batch = None
                     for l in range(batch_cluster_labels.shape[0]):
                         path = tuple(batch_cluster_labels[l].numpy())
+                
                         if path in replay_alternatives:
-                            replay_effective[path] = 1
-                            input_ids = replay_alternatives[path]['input_ids'][:DATA_PER_PATH]
-                            labels = replay_alternatives[path]['labels'][:DATA_PER_PATH]
-                                
-                            if replay_batch:
-                                replay_batch['input_ids'] = torch.cat((replay_batch['input_ids'], input_ids.to('cuda')), dim=0)
-                                replay_batch['labels'] = torch.cat((replay_batch['labels'], labels.to('cuda')), dim=0)
-                            else:
-                                replay_batch = {'input_ids': input_ids, 'labels': labels}                            
+                            # print(f'Epoch:{epoch} Update:{i}, len path', len(replay_alternatives[path]['input_ids']))
+                            if len(replay_alternatives[path]['input_ids']) > 20:
+                                len_path += len(replay_alternatives[path]['input_ids'])
+                                replay_effective[path] = 1
+                                input_ids = replay_alternatives[path]['input_ids'][:DATA_PER_PATH]
+                                labels = replay_alternatives[path]['labels'][:DATA_PER_PATH]
+                                    
+                                if replay_batch:
+                                    replay_batch['input_ids'] = torch.cat((replay_batch['input_ids'], input_ids.to('cuda')), dim=0)
+                                    replay_batch['labels'] = torch.cat((replay_batch['labels'], labels.to('cuda')), dim=0)
+                                else:
+                                    replay_batch = {'input_ids': input_ids, 'labels': labels}                       
                     if replay_batch:
-                        replay_batch['attention_mask'] = torch.ones(replay_batch['input_ids'].shape[:2]).to('cuda')
-                        # replay_batch = {key: tensor.to('cuda') for key, tensor in replay_batch.items()}
-                        l = 0         
-                        # loss = 0           
+                        replay_batch['attention_mask'] = torch.ones(replay_batch['input_ids'].shape[:2]).to('cuda')                        
+                        l = 0                                        
                         while l < replay_batch['input_ids'].shape[0]:                    
                             batch_cur = {'input_ids': replay_batch['input_ids'][l:l+config.batch_size], 'attention_mask': replay_batch['attention_mask'][l:l+config.batch_size], 'labels': replay_batch['labels'][l:l+config.batch_size]}
-                            loss_cur, _ = model(**batch_cur)
-                            # loss += loss_cur
-                            optimizer.zero_grad()
-                            loss_cur.backward()
-                            optimizer.step()
+                            loss_cur, _ = model(**batch_cur)   
+                            # loss_cur *= 10                         
+                            loss_cur.backward()                            
                             l += config.batch_size
                         replay_rate_batch += replay_batch['input_ids'].shape[0] / batch_cluster_labels.shape[0]                    
-                            
-                    # optimizer.zero_grad()
-                    # loss.backward()
-                    # optimizer.step()
+                                                
+            optimizer.step()
             lr_scheduler.step() 
             
             # with torch.no_grad():
             #     replay_loss, _ = model(**replay_batch)
             #     print(f'replay loss: {replay_loss}')
-                    
+        print(f'Epoch:{epoch} Update:{i}, len path:{len_path}')             
         if REPLAY:                            
             replay_rate_batch /= (len(train_loader) / STEP)
             replay_rate_epoch += replay_rate_batch          
@@ -181,8 +159,7 @@ def main():
         writer.add_scalar('perplexity_train_epoch', loss_train, epoch)
         writer.add_scalar('perplexity_valid', loss_valid, epoch)
         writer.add_scalar('perplexity_valid_old', loss_valid_old, epoch)
-        writer.add_scalar('learning_rate', optimizer.param_groups[-1]['lr'], epoch)
-        step += 1
+        writer.add_scalar('learning_rate', optimizer.param_groups[-1]['lr'], epoch)        
         
     if REPLAY:
         print("Replay rate: ", replay_rate_epoch / num_epochs)
