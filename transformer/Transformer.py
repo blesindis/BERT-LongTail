@@ -1,10 +1,6 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
-from scipy.spatial import distance
-from transformers.models.bert.modeling_bert import BertLMPredictionHead
-
-from utils import *
 
 
 class Embeddings(nn.Module):

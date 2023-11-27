@@ -1,9 +1,6 @@
 import os
-import random
-import argparse
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from accelerate import Accelerator
 from torch.utils.tensorboard import SummaryWriter
@@ -11,6 +8,10 @@ from transformers import BertConfig, get_cosine_schedule_with_warmup
 
 # Local imports
 import base_models
+from utils.train_utils import (
+    validate,
+    load_layer_data,
+)
 from Dataset import MixedData
 
 
@@ -31,27 +32,6 @@ CONFIG_PATH = 'config/bert.json'
 num_epochs = 50
 lr = 1e-4
 weight_decay = 0
-
-
-def validate(model, val_loader, accelerator):
-    losses = []
-    print(len(val_loader))
-    for i, batch in enumerate(val_loader):    
-        with torch.no_grad():
-            loss, _ = model(**batch)
-        losses.append(accelerator.gather(loss.repeat(len(batch))))
-    
-    losses = torch.cat(losses)[:len(val_loader.dataset)]
-    loss = torch.mean(losses)
-    
-    return loss
-
-
-def load_layer_data(path):
-    layer_data_dict = torch.load(path, map_location='cuda')
-    layer_data = list(layer_data_dict.values())
-    layer_data = torch.tensor(np.array(layer_data)).to('cuda')
-    return layer_data
 
 
 def copy_parameters(source_module, target_module):
