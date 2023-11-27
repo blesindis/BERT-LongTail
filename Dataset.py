@@ -300,21 +300,24 @@ class RestaurantForLM():
         tokenized_datasets.save_to_disk(path)
         return tokenized_datasets
 
-    def __init__(self, config):
+    def __init__(self, config, train_len, val_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
-        self.tokenizer = AutoTokenizer.from_pretrained('roberta-base')
-        path = os.path.join("/home/archen/datasets/restaurantforLM", str(self.block_size))
+        self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
+        path = os.path.join("/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/restaurant", str(self.block_size))
         if not config.preprocessed:
             self.preprocess(config, path)
         lm_datasets = load_from_disk(path)
+        train_data = Subset(lm_datasets['train'], range(train_len))
+        val_data = Subset(lm_datasets['validation'], range(val_len))
+        
         seed = 42
         torch.manual_seed(seed)
         np.random.seed(seed)
         data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm_probability=0.15)
-        self.train_loader = DataLoader(lm_datasets['train'], batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
+        self.train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
         self.train_loader_unshuffle = DataLoader(lm_datasets['train'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
-        self.val_loader = DataLoader(lm_datasets['validation'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
         # self.test_loader = DataLoader(lm_datasets['test'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
 
 class ACLForLM():
@@ -368,17 +371,18 @@ class ACLForLM():
         tokenized_datasets.save_to_disk(path)
         return tokenized_datasets
 
-    def __init__(self, config, dataset_len):
+    def __init__(self, config, train_len, val_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
+        # self.batch_size = 1
         self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
         
         path = os.path.join("/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/acl", str(self.block_size))
         if not config.preprocessed:
             self.preprocess(config, path)
         lm_datasets = load_from_disk(path)
-        train_data = Subset(lm_datasets['train'], range(dataset_len))
-        val_data = Subset(lm_datasets['validation'], range(dataset_len))
+        train_data = Subset(lm_datasets['train'], range(train_len))
+        val_data = Subset(lm_datasets['validation'], range(val_len))
         
         seed = 42
         torch.manual_seed(seed)
@@ -715,7 +719,7 @@ class MixedData():
         )
         tokenized_datasets.save_to_disk(path)
         return tokenized_datasets
-    def __init__(self, config, dataset_len):
+    def __init__(self, config, train_len, val_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
         self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
@@ -754,12 +758,12 @@ class MixedData():
         for dataset in datasets:
             if not val_data:
                 val_data, train_data = dataset['validation'], dataset['train']
-                val_data = Subset(val_data, range(dataset_len))
-                train_data = Subset(train_data, range(dataset_len))
+                val_data = Subset(val_data, range(val_len))
+                train_data = Subset(train_data, range(train_len))
                 val_loader_set.append(DataLoader(val_data, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator))
             else:
-                dataset_val = Subset(dataset['validation'], range(dataset_len))
-                dataset_train = Subset(dataset['train'], range(dataset_len))
+                dataset_val = Subset(dataset['validation'], range(val_len))
+                dataset_train = Subset(dataset['train'], range(train_len))
                 val_data = ConcatDataset([val_data, dataset_val])
                 train_data = ConcatDataset([train_data, dataset_train])                
                 val_loader_set.append(DataLoader(dataset_val, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator))
@@ -1175,6 +1179,38 @@ class ReviewForLM_small():
         self.train_loader_unshuffle = DataLoader(lm_datasets['train'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
         self.val_loader = DataLoader(lm_datasets_val, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
         # self.test_loader = DataLoader(lm_datasets['test'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+
+
+class CustomDataset(Dataset):
+    def __init__(self, data):
+        self._data = data
+    
+    def __len__(self):
+        return len(self._data['input_ids'])
+    
+    def __getitem__(self, idx):
+        sample = {'input_ids': self._data['input_ids'][idx], 'labels': self._data['labels'][idx], 'attention_mask': self._data['attention_mask'][idx]}
+        return sample
+
+class ReplayDataset():
+    def __init__(self, batch_size, path):
+        tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
+        replay_data = torch.load(path, map_location='cpu')        
+        data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
+        
+        self.replay_loader = {}
+        
+        for key, input_ids in replay_data.items():              
+            special_tokens_mask = [tokenizer.get_special_tokens_mask(input_id, already_has_special_tokens=True) for input_id in input_ids]
+            special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
+            
+            inputs, labels = data_collator.torch_mask_tokens(input_ids, special_tokens_mask)
+            attention_mask = torch.ones(inputs.shape[0], inputs.shape[1])
+            data = {'input_ids': inputs, 'labels': labels, 'attention_mask': attention_mask}
+            
+            replay_dataset = CustomDataset(data)
+            replay_loader = DataLoader(replay_dataset, batch_size=batch_size, shuffle=True)            
+            self.replay_loader[key] = replay_loader                   
 
 
 if __name__ == "__main__":
