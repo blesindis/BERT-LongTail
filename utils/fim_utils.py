@@ -24,7 +24,9 @@ def compute_fim(model, dataloader, component='embedding'):
             component_fim = normalized_fim
         else:
             component_fim += normalized_fim
-            
+    
+    component_fim /= len(dataloader)
+    
     return component_fim
             
 
