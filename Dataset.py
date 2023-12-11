@@ -1110,7 +1110,7 @@ class RestaurantForLM_small():
         # self.test_loader = DataLoader(lm_datasets['test'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
 
 
-class ReviewForLM_small():
+class ReviewForLM():
     def group_texts(self, examples):
 
         concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
@@ -1161,23 +1161,24 @@ class ReviewForLM_small():
         tokenized_datasets.save_to_disk(path)
         return tokenized_datasets
 
-    def __init__(self, config):
+    def __init__(self, config, train_len, val_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
-        self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/model/tokenizer/roberta-base')
+        self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
         path = os.path.join("/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/review", str(self.block_size))
         if not config.preprocessed:
             self.preprocess(config, path)
         lm_datasets = load_from_disk(path)
-        lm_datasets_train = torch.utils.data.Subset(lm_datasets['train'], range(19200))
-        lm_datasets_val = torch.utils.data.Subset(lm_datasets['validation'], range(1920))
+        train_data = Subset(lm_datasets['train'], range(train_len))
+        val_data = Subset(lm_datasets['validation'], range(val_len))
+        
         seed = 45
         torch.manual_seed(seed)
         np.random.seed(seed)
         data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm_probability=0.15)
-        self.train_loader = DataLoader(lm_datasets_train, batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
+        self.train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
         self.train_loader_unshuffle = DataLoader(lm_datasets['train'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
-        self.val_loader = DataLoader(lm_datasets_val, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
         # self.test_loader = DataLoader(lm_datasets['test'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
 
 
