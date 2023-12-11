@@ -24,7 +24,7 @@ TRAIN_LEN = 10000
 VAL_LEN = 500
 
 # folder paths
-STORE_FOLDER = "1127-bert-stage1-8heads-lr1.5"
+STORE_FOLDER = "1128-bert-stage1-5datasets"
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 CONFIG_PATH = 'config/bert_a.json'
 
@@ -36,7 +36,7 @@ weight_decay = 0
 
 def main():
     config = BertConfig.from_json_file(CONFIG_PATH)
-    dataset = RestaurantForLM(config=config, train_len=TRAIN_LEN, val_len=VAL_LEN)
+    dataset = MixedData(config=config, train_len=TRAIN_LEN, val_len=VAL_LEN)
     
     model = base_models.BertForMLM(config)
     if LOAD_CHECKPOINT:

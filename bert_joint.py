@@ -29,12 +29,12 @@ TRAIN_LEN = 10000
 VAL_LEN = 500
 
 # folder paths
-STORE_FOLDER = "1127-bert-joint-lr1.5-record-similarity-all"
+STORE_FOLDER = "1127-bert-joint-lr1.5-100epoch"
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 CONFIG_PATH = 'config/bert_a.json'
 
 # training parameters
-num_epochs = 50
+num_epochs = 100
 lr = 1.5e-4
 weight_decay = 0
 
@@ -114,10 +114,13 @@ def main():
             writer.add_scalar(f'similarity of embedding', embed_similarity, epoch)
             for l, sim in enumerate(layer_param_similarity):
                 writer.add_scalar(f'similarity of layer {l}', sim, epoch)
-            writer.add_scalar(f'similarity of decoder', decoder_similarity, decoder_similarity)
+            writer.add_scalar(f'similarity of decoder', decoder_similarity, epoch)
             writer.add_scalar(f'learning_rate', optimizer.param_groups[-1]['lr'], epoch)
             
-        accelerator.save_state(os.path.join(STORE_PATH))
+            if epoch % 10 == 0:
+                accelerator.save_state(os.path.join(STORE_PATH, 'checkpoint-' + str(epoch)))
+            
+        accelerator.save_state(STORE_PATH)
     
 
 if __name__ == "__main__":
