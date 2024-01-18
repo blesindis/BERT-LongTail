@@ -41,7 +41,6 @@ class MHSA(nn.Module):
         # self.head_mask = [1] * self.num_attention_heads
     
     def forward(self, hidden_states: torch.Tensor, attention_mask):
-        # print(hidden_states.shape, attention_mask.shape)
         qkv = torch.stack([self.heads[h](hidden_states) for h in range(self.num_attention_heads)])
         # qkv = torch.stack([self.heads[h](hidden_states) * self.head_mask[h] for h in range(self.num_attention_heads)])
         # batch_size, seq_len, _ = hidden_states.shape
@@ -222,7 +221,7 @@ class Experts(nn.Module):
         """Sentence"""
         # h_pca = hidden_states.mean(dim=1)
         """Token"""
-        h_pca = hidden_states.view(-1, 768)
+        h_pca = hidden_states.view(-1,768)
         dist = torch.cdist(h_pca.double(), self.centers.double())
         _, min_indices = torch.min(dist, dim=1)
         for i, cluster_index in enumerate(min_indices):
@@ -231,24 +230,10 @@ class Experts(nn.Module):
         return cluster_list
     
     def forward(self, hidden_states, attention_mask):
-        """Token"""
-        h_ = hidden_states.view(-1, 768)
-        a_ = attention_mask.view(h_.shape[0], -1)
-        output = h_.new_zeros(h_.shape)
-        
+        output = hidden_states.new_zeros(hidden_states.shape)        
         cluster_list = self.routing(hidden_states)
-        # print([len(a) for a in cluster_list])
         for i in range(self.config.num_experts):
-            if (len(cluster_list[i])):
-                o_ = self.experts[i](h_[cluster_list[i], :].unsqueeze(1), a_[cluster_list[i]])
-                # print(o_.shape)
-                output[cluster_list[i], :] = o_.view(len(cluster_list[i]), -1)
-        output = output.view(hidden_states.shape)
-        """Sentence"""
-        # output = hidden_states.new_zeros(hidden_states.shape)
-        # cluster_list = self.routing(hidden_states)
-        # for i in range(self.config.num_experts):                        
-        #     output[cluster_list[i], :, :] = self.experts[i](hidden_states[cluster_list[i], :, :], attention_mask[cluster_list[i], :])
+            output[cluster_list[i], :, :] = self.experts[i](hidden_states[cluster_list[i], :, :], attention_mask[cluster_list[i], :])
         return output
 
 
@@ -274,33 +259,24 @@ class BertMOEModel(nn.Module):
         embeddings = self.embeddings(input_ids)
         outputs = self.layers(embeddings, attention_mask)
         return outputs
-
-
-class SwitchFeedForward(nn.Module):
+    
+    
+class SwitchEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.n_experts = config.num_experts
         self.capacity_factor = config.capacity_factor
         self.is_scale_prob = True
         self.drop_tokens = False
-        self.experts = nn.ModuleList([FeedForward(config) for _ in range(config.num_experts)])
+        self.experts = nn.ModuleList([TransformerEncoder(config) for _ in range(config.num_experts)])
         self.switch = nn.Linear(config.hidden_size, self.n_experts)
         self.softmax = nn.Softmax(dim=-1)
-
-        # self.loss = None
-        # self.loss_coef = loss_coef
-
-    # def load_balance_loss(self, counts, route_prob):
-    #     total = counts.sum(dim=-1, keepdims=True)
-    #     route_frac = counts / total
-    #     route_prob = route_prob / total
-    #     load_balancing_loss = self.n_experts * (route_frac * route_prob).sum()
-
-    #     return load_balancing_loss
-
-    def forward(self, x: torch.Tensor):
+        
+        
+    def forward(self, x, attention_mask):
         batch_size, seq_len, d_model = x.shape
         x = x.contiguous().view(-1, d_model)
+        a_ = attention_mask.view(-1, 1)
         final_output = x.new_zeros(x.shape)
 
         route_prob = self.softmax(self.switch(x))
@@ -320,7 +296,7 @@ class SwitchFeedForward(nn.Module):
                     indexes_list[i] = indexes_list[i][:capacity]
 
 
-        expert_output = [self.experts[i](x[indexes_list[i], :]) for i in range(self.n_experts)]
+        expert_output = [self.experts[i](x[indexes_list[i], :].unsqueeze(1), a_[indexes_list[i]]).squeeze(1) for i in range(self.n_experts)]
         for i in range(self.n_experts):
             final_output[indexes_list[i], :] = expert_output[i]
             
@@ -335,37 +311,63 @@ class SwitchFeedForward(nn.Module):
         return final_output
     
     
-class SwitchEncoder(nn.Module):
+class SwitchEncoderSentence(nn.Module):
     def __init__(self, config):
-        super(SwitchEncoder, self).__init__()
-        self.attention = Attention(config)
-        self.ffn = SwitchFeedForward(config)
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        super().__init__()
+        self.n_experts = config.num_experts
+        self.capacity_factor = config.capacity_factor
+        self.is_scale_prob = True
+        self.drop_tokens = False
+        self.experts = nn.ModuleList([TransformerEncoder(config) for _ in range(config.num_experts)])
+        self.switch = nn.Linear(config.hidden_size, self.n_experts)
+        self.softmax = nn.Softmax(dim=-1)
+        
         
     def forward(self, hidden_states, attention_mask):
-        """Pre Norm"""
-        # att_output = self.attention(hidden_states, attention_mask)
-        # residual = att_output
-        # att_output = self.LayerNorm(att_output)
-        # ffn_output = self.ffn(att_output)
-        # # ffn_output = self.dropout(ffn_output)
+        batch_size, seq_len, d_model = hidden_states.shape
+        h_ = hidden_states.mean(dim=1)
+        a_ = attention_mask.view(-1, 1)
+        final_output = hidden_states.new_zeros(hidden_states.shape)
+
+        route_prob = self.softmax(self.switch(h_))
+        route_prob_max, routes = torch.max(route_prob, dim=-1)
+        indexes_list = [torch.eq(routes, i).nonzero(as_tuple=True)[0] for i in range(self.n_experts)]      
         
-        # # output = self.LayerNorm(att_output + ffn_output)
-        # output = residual + ffn_output
-        """Post Norm"""
-        att_output = self.attention(hidden_states, attention_mask)
-        ffn_output = self.ffn(att_output)
-        ffn_output = self.dropout(ffn_output)
-        output = self.LayerNorm(att_output + ffn_output)        
+        capacity = int(self.capacity_factor * len(hidden_states) / self.n_experts)
+        # counts = x.new_tensor([len(indexes_list[i]) for i in range(self.n_experts)])
+        # self.loss = self.loss_coef * self.load_balance_loss(counts, route_prob)
         
-        return output
+        dropped = []
+        if self.drop_tokens:
+            for i in range(self.n_experts):
+                if len(indexes_list[i]) > capacity:
+                    indexes_list[i] = indexes_list[i][torch.randperm(len(indexes_list[i]))]
+                    dropped.append(indexes_list[i][capacity:])
+                    indexes_list[i] = indexes_list[i][:capacity]
+
+
+        expert_output = [self.experts[i](hidden_states[indexes_list[i], :, :], attention_mask[indexes_list[i], :]) for i in range(self.n_experts)]
+        for i in range(self.n_experts):
+            final_output[indexes_list[i], :] = expert_output[i]
+            
+        if dropped:
+            dropped = torch.cat(dropped)
+            final_output[dropped, :] = hidden_states[dropped, :]
+
+
+        final_output = final_output * route_prob_max.unsqueeze(-1).unsqueeze(-1).expand(-1,seq_len, -1) if self.is_scale_prob else final_output * (route_prob_max / route_prob_max.detach()).route_prob_max.unsqueeze(-1).unsqueeze(-1).expand(-1,seq_len, -1)
+        # final_output = final_output.view(batch_size, seq_len, d_model)
+
+        return final_output
     
     
 class SwitchLayers(nn.Module):
     def __init__(self, config):
         super(SwitchLayers, self).__init__()
-        self.layers = nn.ModuleList([SwitchEncoder(config) for _ in range(config.num_hidden_layers)])
+        """Token"""
+        # self.layers = nn.ModuleList([SwitchEncoder(config) for _ in range(config.num_hidden_layers)])
+        """Sentence"""
+        self.layers = nn.ModuleList([SwitchEncoderSentence(config) for _ in range(config.num_hidden_layers)])
         
     def forward(self, hidden_states, attention_mask):
         for i, layer in enumerate(self.layers):
@@ -373,9 +375,9 @@ class SwitchLayers(nn.Module):
         return hidden_states
     
     
-class SwitchBertModel(nn.Module):
+class SwitchMoTModel(nn.Module):
     def __init__(self, config):
-        super(SwitchBertModel, self).__init__()
+        super(SwitchMoTModel, self).__init__()
         self.embeddings = Embeddings(config)
         self.layers = SwitchLayers(config)
         
