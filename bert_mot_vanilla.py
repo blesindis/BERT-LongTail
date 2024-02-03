@@ -29,7 +29,7 @@ VAL_LEN = 500
 # folder paths
 CENTER_MODEL_PATH = "outputs/0112-bert-wiki103(256)/checkpoint-10000"
 CENTER_PATH = os.path.join(CENTER_MODEL_PATH, 'centers-4-vanilla(use input)-token.pth')
-STORE_FOLDER = "0117-mot-vanilla-wiki103(256)-bs24-(save)-token"
+STORE_FOLDER = "0119-mot-wiki103(256)-bs24-lora128"
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 CONFIG_PATH = 'config/bert_256.json'
 
