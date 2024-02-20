@@ -1,8 +1,10 @@
 import torch
 import torch.nn as nn
 from transformer.Transformer import BertModel, BertMOEModel, SwitchBertModel
-from transformer.MoTSwitch import SwitchMoTModel
-from transformer.MoTAttnLoRA import BertMOTAttnLoRAModel
+from transformer.MoMoE import BertMoMoEModel
+from transformer.MoMoShare import BertMoMoShareModel
+from transformer.MoMoShareFix import BertMoMoShareFixModel
+from transformer.MoMoShareSwitch import BertMoMoShareSwitchModel
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead
 
 
@@ -28,62 +30,6 @@ class BertForMLM(nn.Module):
         elif isinstance(module, nn.LayerNorm):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
-
-    def forward(self, input_ids, attention_mask, labels):
-        output = self.bert(input_ids, attention_mask)
-        scores = self.head(output)
-        mlm_loss = self.criterion(scores.view(-1, self.config.vocab_size), labels.view(-1)) # scores should be of size (num_words, vocab_size)
-
-        return mlm_loss, scores
- 
- 
-class BertWithMoTAttnLoRA(nn.Module):
-    def __init__(self, config, centers):
-        super(BertWithMoTAttnLoRA, self).__init__()
-        self.config = config        
-        self.bert = BertMOTAttnLoRAModel(config, centers)
-        self.head = BertOnlyMLMHead(config)
-        self.criterion = nn.CrossEntropyLoss() 
-        self.apply(self._init_weights)
-        # self.apply_random_mask()
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if module.padding_idx is not None:
-                module.weight.data[module.padding_idx].zero_()
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
-            
-    def apply_random_mask(self):
-        """No embedding & decoder"""
-        # total_params = sum(p.numel() for p in self.bert.layers.parameters())
-        """All"""
-        total_params = sum(p.numel() for p in self.parameters())
-        num_masked = total_params // 2
-
-        # Create a flat mask with 50% ones and 50% zeros
-        flat_mask = torch.cat([
-            torch.ones(num_masked),
-            torch.zeros(total_params - num_masked)
-        ])
-        # Shuffle the mask
-        flat_mask = flat_mask[torch.randperm(total_params)]
-
-        idx = 0
-        """No embedding & decoder"""
-        # for param in self.bert.layers.parameters():
-        # """All"""
-        for param in self.parameters():
-            param_numel = param.numel()
-            param_mask = flat_mask[idx:idx + param_numel].reshape(param.shape)
-            param.data.mul_(param_mask)
-            idx += param_numel
 
     def forward(self, input_ids, attention_mask, labels):
         output = self.bert(input_ids, attention_mask)
@@ -123,11 +69,11 @@ class BertWithMOE(nn.Module):
         return mlm_loss, scores
     
     
-class BertSwitch(nn.Module):
-    def __init__(self, config):
-        super(BertSwitch, self).__init__()
-        self.config = config
-        self.bert = SwitchBertModel(config)
+class BertWithMoMoShare(nn.Module):
+    def __init__(self, config, centers):
+        super(BertWithMoMoShare, self).__init__()
+        self.config = config        
+        self.bert = BertMoMoShareModel(config, centers)
         self.head = BertOnlyMLMHead(config)
         self.criterion = nn.CrossEntropyLoss() 
         self.apply(self._init_weights)
@@ -153,11 +99,101 @@ class BertSwitch(nn.Module):
         return mlm_loss, scores
     
     
-class BertMoTSwitch(nn.Module):
+class BertWithMoMoShareFix(nn.Module):
+    def __init__(self, config, centers):
+        super(BertWithMoMoShareFix, self).__init__()
+        self.config = config        
+        self.bert = BertMoMoShareFixModel(config, centers)
+        self.head = BertOnlyMLMHead(config)
+        self.criterion = nn.CrossEntropyLoss() 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+    def forward(self, input_ids, attention_mask, labels, expert_index):
+        output = self.bert(input_ids, attention_mask, expert_index)
+        scores = self.head(output)
+        mlm_loss = self.criterion(scores.view(-1, self.config.vocab_size), labels.view(-1)) # scores should be of size (num_words, vocab_size)
+
+        return mlm_loss, scores
+    
+    
+class BertWithMoMoShareSwitch(nn.Module):
     def __init__(self, config):
-        super(BertMoTSwitch, self).__init__()
+        super(BertWithMoMoShareSwitch, self).__init__()
+        self.config = config        
+        self.bert = BertMoMoShareSwitchModel(config)
+        self.head = BertOnlyMLMHead(config)
+        self.criterion = nn.CrossEntropyLoss() 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+    def forward(self, input_ids, attention_mask, labels, expert_index):
+        output = self.bert(input_ids, attention_mask, expert_index)
+        scores = self.head(output)
+        mlm_loss = self.criterion(scores.view(-1, self.config.vocab_size), labels.view(-1)) # scores should be of size (num_words, vocab_size)
+
+        return mlm_loss, scores
+    
+    
+class BertWithMoMoE(nn.Module):
+    def __init__(self, config, centers, ffn_centers):
+        super(BertWithMoMoE, self).__init__()
+        self.config = config        
+        self.bert = BertMoMoEModel(config, centers, ffn_centers)
+        self.head = BertOnlyMLMHead(config)
+        self.criterion = nn.CrossEntropyLoss() 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+    def forward(self, input_ids, attention_mask, labels):
+        output = self.bert(input_ids, attention_mask)
+        scores = self.head(output)
+        mlm_loss = self.criterion(scores.view(-1, self.config.vocab_size), labels.view(-1)) # scores should be of size (num_words, vocab_size)
+
+        return mlm_loss, scores
+    
+    
+class BertSwitch(nn.Module):
+    def __init__(self, config):
+        super(BertSwitch, self).__init__()
         self.config = config
-        self.bert = SwitchMoTModel(config)
+        self.bert = SwitchBertModel(config)
         self.head = BertOnlyMLMHead(config)
         self.criterion = nn.CrossEntropyLoss() 
         self.apply(self._init_weights)
