@@ -1,9 +1,23 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
-from transformer.modules.transformer import FeedForward
 
 
+class FeedForward(nn.Module):
+    def __init__(self, config):
+        super(FeedForward, self).__init__()
+        self.config = config
+        self.dense_1 = nn.Linear(config.hidden_size, config.intermediate_size)
+        self.intermediate_act_fn = nn.GELU()
+        self.dense_2 = nn.Linear(config.intermediate_size, config.hidden_size)
+    
+    def forward(self, hidden_states):
+        hidden_states = self.dense_1(hidden_states)
+        hidden_states = self.intermediate_act_fn(hidden_states)
+        hidden_states = self.dense_2(hidden_states)
+        return hidden_states
+    
+    
 class SwitchFeedForward(nn.Module):
     def __init__(self, config):
         super().__init__()

@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
-from transformer.modules.transformer import Embeddings, Attention, FeedForward
-from transformer.modules.switch_transformer import SwitchFeedForward
-from transformer.modules.lora_new import SmallAttention
+from transformer.modules.common import Embeddings
+from transformer.modules.attention import Attention, SmallAttention
+from transformer.modules.feedforward import FeedForward, SwitchFeedForward
     
     
 class ExpertAttention(nn.Module):
