@@ -1,18 +1,77 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
-from transformer.modules.transformer import Embeddings, Attention, FeedForward
+
+
+class Embeddings(nn.Module):
+    def __init__(self, config):
+        super(Embeddings, self).__init__()
+        self.config = config
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=0)
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
+        self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+    
+    def forward(self, input_ids) -> torch.Tensor:
+        batch_size, seq_len = input_ids.shape
+        embeddings = self.word_embeddings(input_ids)
+        position_ids = self.position_ids[:, :seq_len]
+        position_embeddings = self.position_embeddings(position_ids)
+        embeddings += position_embeddings
+        
+        embeddings = self.LayerNorm(embeddings)
+        embeddings = self.dropout(embeddings)
+        return embeddings
+    
+
+"""Origin MHSA"""
+# class MHSA(nn.Module):
+#     def __init__(self, config):
+#         super(MHSA, self).__init__()
+#         self.config = config
+#         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
+#         self.num_attention_heads = config.num_attention_heads
+        
+#         self.input_dim = config.hidden_size
+#         self.heads = nn.ModuleList([nn.Linear(self.input_dim, self.attention_head_size * 3, bias=False) for _ in range(self.num_attention_heads)])
+#         self.scale_factor = self.input_dim ** -0.5  # 1/np.sqrt(dim)
+#         self.softmax = nn.Softmax(dim=-1)
+
+#         # self.head_mask = [1] * self.num_attention_heads
+    
+#     def forward(self, hidden_states: torch.Tensor, attention_mask):
+#         # print(hidden_states.shape, attention_mask.shape)
+#         qkv = torch.stack([self.heads[h](hidden_states) for h in range(self.num_attention_heads)])
+#         # qkv = torch.stack([self.heads[h](hidden_states) * self.head_mask[h] for h in range(self.num_attention_heads)])
+#         # batch_size, seq_len, _ = hidden_states.shape
+#         # qkv = torch.stack([
+#         #     self.heads[h](hidden_states) if self.head_mask[h] else hidden_states.new_zeros((batch_size, seq_len, self.attention_head_size * 3))
+#         #     for h in range(self.num_attention_heads)
+#         # ])
+#         q, k, v = tuple(rearrange(qkv, 'h b n (k d) -> k b h n d', k=3))
+
+#         scaled_dot_prod = torch.einsum('... i d , ... j d -> ... i j', q, k) * self.scale_factor
+#         scaled_dot_prod = scaled_dot_prod.masked_fill(attention_mask[:, None, None, :] == 0, -torch.inf)
+#         attention = self.softmax(scaled_dot_prod)
+#         self.attention = attention
+
+#         # batch_size, num_head, seq_len, head_dim
+#         result = torch.einsum('... i j , ... j d -> ... i d', attention, v)
+#         result = rearrange(result, "b h n d -> b n (h d)")
+#         return result
+    
     
 """Lora MHSA"""
-class LoRAMHSA(nn.Module):
+class MHSA(nn.Module):
     def __init__(self, config):
-        super(LoRAMHSA, self).__init__()
+        super(MHSA, self).__init__()
         self.config = config
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.num_attention_heads = config.num_attention_heads
         
         self.input_dim = config.hidden_size
-        self.lora_dim = 768
+        self.lora_dim = 128
         
         """"""
         self.transform_layer = nn.Linear(self.input_dim, self.lora_dim, bias=False) 
@@ -40,7 +99,7 @@ class LoRAMHSA(nn.Module):
         transforms = []
         for h in range(self.num_attention_heads):
             # Apply the first transformation
-            transformed = self.transform_layer(hidden_states)
+            transformed = self.transform_layers[h](hidden_states)
             
             # Apply the second transformation and split into Q, K, V
             transformed = self.apply_layers[h](transformed)   
@@ -62,10 +121,10 @@ class LoRAMHSA(nn.Module):
         return result
     
     
-class LoRAAttention(nn.Module):
+class Attention(nn.Module):
     def __init__(self, config):
-        super(LoRAAttention, self).__init__()
-        self.self = LoRAMHSA(config) # split multi-head
+        super(Attention, self).__init__()
+        self.self = MHSA(config) # split multi-head
         # self.self = SelfAttention(config)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -82,6 +141,21 @@ class LoRAAttention(nn.Module):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        return hidden_states
+    
+    
+class FeedForward(nn.Module):
+    def __init__(self, config):
+        super(FeedForward, self).__init__()
+        self.config = config
+        self.dense_1 = nn.Linear(config.hidden_size, config.intermediate_size)
+        self.intermediate_act_fn = nn.GELU()
+        self.dense_2 = nn.Linear(config.intermediate_size, config.hidden_size)
+    
+    def forward(self, hidden_states):
+        hidden_states = self.dense_1(hidden_states)
+        hidden_states = self.intermediate_act_fn(hidden_states)
+        hidden_states = self.dense_2(hidden_states)
         return hidden_states
     
     
@@ -145,6 +219,8 @@ class Experts(nn.Module):
         
         """Sentence"""
         h_pca = hidden_states.mean(dim=1)
+        """Token"""
+        # h_pca = hidden_states.view(-1, 768)
         dist = torch.cdist(h_pca.double(), self.centers.double())
         _, min_indices = torch.min(dist, dim=1)
         for i, cluster_index in enumerate(min_indices):
@@ -153,6 +229,19 @@ class Experts(nn.Module):
         return cluster_list
     
     def forward(self, hidden_states, attention_mask):
+        """Token"""
+        # h_ = hidden_states.view(-1, 768)
+        # a_ = attention_mask.view(h_.shape[0], -1)
+        # output = h_.new_zeros(h_.shape)
+        
+        # cluster_list = self.routing(hidden_states)
+        # # print([len(a) for a in cluster_list])
+        # for i in range(self.config.num_experts):
+        #     if (len(cluster_list[i])):
+        #         o_ = self.experts[i](h_[cluster_list[i], :].unsqueeze(1), a_[cluster_list[i]])
+        #         # print(o_.shape)
+        #         output[cluster_list[i], :] = o_.view(len(cluster_list[i]), -1)
+        # output = output.view(hidden_states.shape)
         """Sentence"""
         output = hidden_states.new_zeros(hidden_states.shape)
         cluster_list = self.routing(hidden_states)

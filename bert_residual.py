@@ -11,7 +11,7 @@ from transformers import BertConfig, get_cosine_schedule_with_warmup
 
 # Local imports
 import base_models
-from Dataset import Wikipedia ,BookCorpus, BERTPretrain
+from Dataset import MixedData, BookCorpus, RestaurantForLM, Wikitext, Wikitext103
 from utils.sample_utils import *
 from utils.train_utils import (
     validate,
@@ -21,17 +21,17 @@ from utils.train_utils import (
 LOAD_CHECKPOINT = False
 
 # train and validation size for pretrain
-TRAIN_LEN = 250000
-VAL_LEN = 1600
+TRAIN_LEN = 200000
+VAL_LEN = 500
 
 # folder paths
-STORE_FOLDER = "bert(128)300w-bs64-1epoch-lr1-bert"
+STORE_FOLDER = "0115-bert-wiki103(256)-bs24-(save)"
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
-CONFIG_PATH = 'config/bert_a.json'
+CONFIG_PATH = 'config/bert_256.json'
 
 # training parameters
-num_epochs = 1
-lr = 1e-4
+num_epochs = 5
+lr = 1.5e-4
 weight_decay = 0.01
 
 
@@ -39,7 +39,8 @@ def main():
     set_seed(45)
     
     config = BertConfig.from_json_file(CONFIG_PATH)
-    dataset = BERTPretrain(config=config)
+    dataset = Wikitext103(config=config)
+    # dataset = MixedData(config=config, train_len=TRAIN_LEN, val_len=VAL_LEN)
     
     model = base_models.BertForMLM(config)
     if LOAD_CHECKPOINT:
@@ -66,7 +67,6 @@ def main():
             
             losses = []        
             for i, batch in enumerate(train_loader):                      
-                print(batch)
                 loss, _ = model(**batch)
                 losses.append(accelerator.gather(loss.repeat(config.batch_size)))
                 
@@ -76,7 +76,7 @@ def main():
                 lr_scheduler.step()          
                   
                 if step % 100 == 0:
-                    loss_train = torch.mean(torch.cat(losses)[:6400])
+                    loss_train = torch.mean(torch.cat(losses)[:2400])
                     loss_valid = validate(model, val_loader, accelerator)
                     accelerator.print(f'iteration:{step} , Train Loss: {loss_train}, Valid Loss: {loss_valid}')
 

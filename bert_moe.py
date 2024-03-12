@@ -11,7 +11,7 @@ from transformers import BertConfig, get_cosine_schedule_with_warmup
 
 # Local imports
 import base_models
-from Dataset import BERTPretrain
+from Dataset import MixedPretrain, BookCorpus, MixedData, Wikitext103
 from utils.sample_utils import *
 from utils.train_utils import (
     validate,
@@ -19,18 +19,21 @@ from utils.train_utils import (
     load_layer_data,
 )
 
+NEED_CENTER = False
+SAMPLE_BATCHES = 20
+
 # train and validation size for pretrain
 TRAIN_LEN = 200000
 VAL_LEN = 500
 
 # folder paths
-STORE_FOLDER = "bert(128)300w-bs64-epoch1-lr3-moe"
+STORE_FOLDER = "0115-moe4-wiki103(256)-bs24-(save)"
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
-CONFIG_PATH = 'config/bert_a.json'
+CONFIG_PATH = 'config/bert_256.json'
 
 # training parameters
-num_epochs = 1
-lr = 3e-4
+num_epochs = 5
+lr = 1.5e-4
 weight_decay = 0.01
 decay = 0.8
 
@@ -41,8 +44,8 @@ def main():
     accelerator = Accelerator()
     
     config = BertConfig.from_json_file(CONFIG_PATH)
-    dataset = BERTPretrain(config=config)
-    
+    dataset = Wikitext103(config=config)
+    # dataset = MixedData(config=config, train_len=TRAIN_LEN, val_len=VAL_LEN)
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
     
@@ -74,7 +77,7 @@ def main():
             
             if step % 100 == 0:
                 
-                loss_train = torch.mean(torch.cat(losses)[:6400])
+                loss_train = torch.mean(torch.cat(losses)[:2400])
                 loss_valid = validate(model, val_loader, accelerator)
                 accelerator.print(f'Iteration:{step}, Train Loss: {loss_train}, Valid Loss: {loss_valid}')
                 torch.cuda.empty_cache()
