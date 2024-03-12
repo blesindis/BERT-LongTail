@@ -1,4 +1,5 @@
 import torch
+import torch
 import torch.nn as nn
 from transformer.Transformer import BertModel, BertMOEModel, SwitchBertModel
 from transformer.MoMoShare import BertMoMoShareModel
@@ -19,6 +20,7 @@ from transformer.MoMoModelRouterCommonLargeNew import BertMoMoModelRouterCommonA
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead
 
 
+# origin bert
 # origin bert
 class BertForMLM(nn.Module):
     def __init__(self, config):
@@ -48,6 +50,7 @@ class BertForMLM(nn.Module):
         mlm_loss = self.criterion(scores.view(-1, self.config.vocab_size), labels.view(-1)) # scores should be of size (num_words, vocab_size)
 
         return mlm_loss, scores
+ 
  
     
 class BertWithMOE(nn.Module):
@@ -313,6 +316,7 @@ class BertWithMoMoDynamicDistribution(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
+
     def forward(self, input_ids, attention_mask, labels):
         output = self.bert(input_ids, attention_mask)
         scores = self.head(output)
@@ -534,9 +538,15 @@ class BertWithMoMoShareSwitch(nn.Module):
 class BertSwitch(nn.Module):
     def __init__(self, config):
         super(BertSwitch, self).__init__()
+        super(BertSwitch, self).__init__()
         self.config = config
         self.bert = SwitchBertModel(config)
+        self.bert = SwitchBertModel(config)
         self.head = BertOnlyMLMHead(config)
+        self.criterion = nn.CrossEntropyLoss() 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
         self.criterion = nn.CrossEntropyLoss() 
         self.apply(self._init_weights)
 
@@ -553,11 +563,16 @@ class BertSwitch(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
+
     def forward(self, input_ids, attention_mask, labels):
+        output = self.bert(input_ids, attention_mask)
         output = self.bert(input_ids, attention_mask)
         scores = self.head(output)
         mlm_loss = self.criterion(scores.view(-1, self.config.vocab_size), labels.view(-1)) # scores should be of size (num_words, vocab_size)
 
+        return mlm_loss, scores
+    
+    
         return mlm_loss, scores
     
     

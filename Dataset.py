@@ -1,4 +1,5 @@
 from torch.utils.data import DataLoader, Subset, ConcatDataset
+from torch.utils.data import DataLoader, Subset, ConcatDataset
 from torchvision import transforms
 import torchvision
 import multiprocessing
@@ -104,7 +105,54 @@ class Wikitext():
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
         self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
+        self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
 
+        path = os.path.join('/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/wikitext-2-raw', str(self.block_size))
+        if not config.preprocessed:
+            self.preprocess(config, path)
+        lm_datasets = load_from_disk(path)
+        
+        data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm_probability=0.15)
+        # data_collator = DistributedSampler(data_collator)
+        self.train_loader = DataLoader(lm_datasets['train'], batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
+        self.train_loader_unshuffle = DataLoader(lm_datasets['train'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.val_loader = DataLoader(lm_datasets['validation'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.test_loader = DataLoader(lm_datasets['test'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        
+        
+class Wikitext103():
+    def group_texts(self, examples):
+        block_size = self.block_size
+
+        # Concatenate all texts.
+        concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+        total_length = len(concatenated_examples[list(examples.keys())[0]])
+        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+            # customize this part to your needs.
+        total_length = (total_length // block_size) * block_size
+        # Split by chunks of max_len.
+        result = {
+            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+            for k, t in concatenated_examples.items()
+        }
+        result["labels"] = result["input_ids"].copy()
+        return result
+    
+    def preprocess(self, config, path):
+        num_proc = multiprocessing.cpu_count() // 2
+
+        raw_datasets = load_from_disk('/home/mychen/ER_TextSpeech/BERT/data/datasets/wikitext-103-raw')
+        tokenized_datasets = raw_datasets.map(lambda dataset: self.tokenizer(dataset['text']), batched=True, num_proc=num_proc, remove_columns=["text"])
+        lm_dataset = tokenized_datasets.map(self.group_texts, batched=True)
+        lm_dataset.save_to_disk(path)
+        return lm_dataset
+
+    def __init__(self, config):
+        self.block_size = config.seq_len
+        self.batch_size = config.batch_size
+        self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
+
+        path = os.path.join('/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/wikitext-103-raw', str(self.block_size))
         path = os.path.join('/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/wikitext-2-raw', str(self.block_size))
         if not config.preprocessed:
             self.preprocess(config, path)
@@ -346,8 +394,11 @@ class RestaurantForLM():
         return tokenized_datasets
 
     def __init__(self, config, train_len, val_len):
+    def __init__(self, config, train_len, val_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
+        self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
+        path = os.path.join("/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/restaurant", str(self.block_size))
         self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
         path = os.path.join("/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/restaurant", str(self.block_size))
         if not config.preprocessed:
@@ -356,12 +407,17 @@ class RestaurantForLM():
         train_data = Subset(lm_datasets['train'], range(train_len))
         val_data = Subset(lm_datasets['validation'], range(val_len))
         
+        train_data = Subset(lm_datasets['train'], range(train_len))
+        val_data = Subset(lm_datasets['validation'], range(val_len))
+        
         seed = 42
         torch.manual_seed(seed)
         np.random.seed(seed)
         data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm_probability=0.15)
         self.train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
+        self.train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
         self.train_loader_unshuffle = DataLoader(lm_datasets['train'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
         self.val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
         # self.test_loader = DataLoader(lm_datasets['test'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
 
@@ -386,6 +442,7 @@ class ACLForLM():
         return self.tokenizer(examples[self.text_column_name], return_special_tokens_mask=True)
     
     def preprocess(self, config, path):
+        data_files = {'train': '/home/mychen/ER_TextSpeech/BERT/data/datasets/acl/acl_anthology.txt'}
         data_files = {'train': '/home/mychen/ER_TextSpeech/BERT/data/datasets/acl/acl_anthology.txt'}
         datasets = load_dataset('text', data_files=data_files)
         datasets["validation"] = load_dataset(
@@ -417,8 +474,13 @@ class ACLForLM():
         return tokenized_datasets
 
     def __init__(self, config, train_len, val_len):
+    def __init__(self, config, train_len, val_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
+        # self.batch_size = 1
+        self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
+        
+        path = os.path.join("/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/acl", str(self.block_size))
         # self.batch_size = 1
         self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
         
@@ -429,12 +491,17 @@ class ACLForLM():
         train_data = Subset(lm_datasets['train'], range(train_len))
         val_data = Subset(lm_datasets['validation'], range(val_len))
         
+        train_data = Subset(lm_datasets['train'], range(train_len))
+        val_data = Subset(lm_datasets['validation'], range(val_len))
+        
         seed = 42
         torch.manual_seed(seed)
         np.random.seed(seed)
         data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm_probability=0.15)
         self.train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
+        self.train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
         self.train_loader_unshuffle = DataLoader(lm_datasets['train'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
         self.val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
         # self.test_loader = DataLoader(lm_datasets['test'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
 
@@ -1344,6 +1411,7 @@ class RestaurantForLM_small():
         lm_datasets_train = torch.utils.data.Subset(lm_datasets['train'], range(19200))
         lm_datasets_val = torch.utils.data.Subset(lm_datasets['validation'], range(1920))
         seed = 45
+        seed = 45
         torch.manual_seed(seed)
         np.random.seed(seed)
         data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm_probability=0.15)
@@ -1404,10 +1472,82 @@ class ACLForLM_small():
         return tokenized_datasets
 
     def __init__(self, config, dataset_len):
+    def __init__(self, config, dataset_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
         self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/model/tokenizer/roberta-base')
         path = os.path.join("/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/acl", str(self.block_size))
+        if not config.preprocessed:
+            self.preprocess(config, path)
+        lm_datasets = load_from_disk(path)
+        lm_datasets_train = torch.utils.data.Subset(lm_datasets['train'], range(dataset_len))
+        lm_datasets_val = torch.utils.data.Subset(lm_datasets['validation'], range(dataset_len))
+        seed = 45
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm_probability=0.15)
+        self.train_loader = DataLoader(lm_datasets_train, batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
+        self.train_loader_unshuffle = DataLoader(lm_datasets['train'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.val_loader = DataLoader(lm_datasets_val, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        # self.test_loader = DataLoader(lm_datasets['test'], batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+
+
+class LegalForLM():
+    def group_texts(self, examples):
+
+        concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+        total_length = len(concatenated_examples[list(examples.keys())[0]])
+        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+        # customize this part to your needs.
+        if total_length >= self.block_size:
+            total_length = (total_length // self.block_size) * self.block_size
+        # Split by chunks of max_len.
+        result = {
+            k: [t[i: i + self.block_size] for i in range(0, total_length, self.block_size)]
+            for k, t in concatenated_examples.items()
+        }
+        result["labels"] = result["input_ids"].copy()
+        return result
+    
+    def tokenize_function(self, examples):
+        return self.tokenizer(examples[self.text_column_name], return_special_tokens_mask=True)
+    
+    def preprocess(self, config, path):
+        data_files = {'train': '/home/mychen/ER_TextSpeech/BERT/data/datasets/legal/legal.txt'}
+        datasets = load_dataset('text', data_files=data_files)
+        datasets["validation"] = load_dataset(
+            'text', data_files=data_files,split="train[:1%]"
+        )
+        datasets["train"] = load_dataset(
+            'text', data_files=data_files,
+            split="train[5%:]",
+        )
+        #rawdatasets
+        column_names = datasets["train"].column_names
+        self.text_column_name = "text" if "text" in column_names else column_names[0]
+        tokenized_datasets = datasets.map(
+            self.tokenize_function,
+            batched=True,
+            # num_proc=config.preprocessing_num_workers,
+            remove_columns=column_names,
+            # load_from_cache_file=not config.overwrite_cache,
+            desc="Running tokenizer on every text in dataset",
+        )
+        tokenized_datasets = tokenized_datasets.map(
+            self.group_texts,
+            batched=True,
+            # num_proc=config.preprocessing_num_workers,
+            # load_from_cache_file=not config.overwrite_cache,
+            desc=f"Grouping texts in chunks of {1024}",
+        )
+        tokenized_datasets.save_to_disk(path)
+        return tokenized_datasets
+
+    def __init__(self, config):
+        self.block_size = config.seq_len
+        self.batch_size = config.batch_size
+        self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/model/tokenizer/roberta-base')
+        path = os.path.join("/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/legal", str(self.block_size))
         if not config.preprocessed:
             self.preprocess(config, path)
         lm_datasets = load_from_disk(path)

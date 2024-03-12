@@ -78,6 +78,13 @@ class LoRAAttention(nn.Module):
         # hidden_states = self.dense(hidden_states)
         # hidden_states = hidden_states + input_tensor
         """Post Norm"""
+    def forward(self, input_tensor, attention_mask):        
+        """Pre Norm No Dropout"""
+        # hidden_states = self.LayerNorm(input_tensor)
+        # hidden_states = self.self(hidden_states, attention_mask)
+        # hidden_states = self.dense(hidden_states)
+        # hidden_states = hidden_states + input_tensor
+        """Post Norm"""
         hidden_states = self.self(input_tensor, attention_mask)
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
@@ -94,6 +101,13 @@ class TransformerEncoder(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, attention_mask) -> torch.Tensor:
+        """Pre Norm No Dropout"""
+        # att_output = self.attention(hidden_states, attention_mask)
+        # residual = att_output
+        # att_output = self.LayerNorm(att_output)
+        # ffn_output = self.ffn(att_output)
+        # output = residual + ffn_output
+        """Post Norm"""
         """Pre Norm No Dropout"""
         # att_output = self.attention(hidden_states, attention_mask)
         # residual = att_output
@@ -120,6 +134,7 @@ class TransformerEncoders(nn.Module):
         return hidden_states
     
     
+# tradition bert
 # tradition bert
 class BertModel(nn.Module):
     def __init__(self, config):
