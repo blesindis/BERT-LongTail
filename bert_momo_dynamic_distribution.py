@@ -19,17 +19,22 @@ from utils.train_utils import (
     load_layer_data,
 )
 
+NEED_CENTER = False
+NUM_EXPERTS = 2
+NUM_FFN_EXPERTS = 2
+SAMPLE_BATCHES = 20
+
 # train and validation size for pretrain
-TRAIN_LEN = 200000
+TRAIN_LEN = 50000
 VAL_LEN = 500
 
 # folder paths
-STORE_FOLDER = "bert(128)300w-bs64-epoch1-lr3-moe"
+STORE_FOLDER = "bert(128)-bs64-3epoch-lr3-momo_dynamic_distribution_warm2000_minnew500_lora128"
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 CONFIG_PATH = 'config/bert_a.json'
 
 # training parameters
-num_epochs = 1
+num_epochs = 3
 lr = 3e-4
 weight_decay = 0.01
 decay = 0.8
@@ -41,12 +46,13 @@ def main():
     accelerator = Accelerator()
     
     config = BertConfig.from_json_file(CONFIG_PATH)
-    dataset = BERTPretrain(config=config)
     
+    # dataset = Wikitext103(config=config)
+    dataset = BERTPretrain(config=config)
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
     
-    model = base_models.BertSwitch(config)
+    model = base_models.BertWithMoMoDynamicDistribution(config)
     
     num_updates = num_epochs * len(train_loader)
     
@@ -71,20 +77,27 @@ def main():
             accelerator.backward(loss)
             optimizer.step()
             lr_scheduler.step()          
-            
+            # print(loss)
             if step % 100 == 0:
                 
                 loss_train = torch.mean(torch.cat(losses)[:6400])
                 loss_valid = validate(model, val_loader, accelerator)
                 accelerator.print(f'Iteration:{step}, Train Loss: {loss_train}, Valid Loss: {loss_valid}')
-                torch.cuda.empty_cache()
+                
                 losses = []
                 if accelerator.is_local_main_process:
                     writer.add_scalar(f'perplexity_train_epoch', loss_train, step)
                     writer.add_scalar(f'perplexity_valid', loss_valid, step)
                     writer.add_scalar(f'learning_rate', optimizer.param_groups[-1]['lr'], step)
+                    for l in range(config.num_hidden_layers):                        
+                        writer.add_scalar(f'Num formed_experts of layer {l}', model.bert.layers.layers[l].attention.formed_experts, step)
             if step % 5000 == 0:
+                layer_distributions = {}
+                for l in range(config.num_hidden_layers):
+                    distributions = model.bert.layers.layers[l].attention.distributions
+                    layer_distributions['layer' + str(l)] = distributions
                 accelerator.save_state(os.path.join(STORE_PATH, 'checkpoint-' + str(step)))
+                torch.save(distributions, os.path.join(STORE_PATH, 'checkpoint-' + str(step), 'distributions.pth'))
             step += 1
     
     accelerator.save_state(STORE_PATH)
