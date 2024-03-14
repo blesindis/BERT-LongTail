@@ -8,9 +8,9 @@ from accelerate import Accelerator
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
+from transformer.MoMoTSwitch import BertWithMoMoTSwitch
 
 # Local imports
-import base_models
 from Dataset import MixedPretrain, ACLForLM, RestaurantForLM, Wikitext103
 from utils.sample_utils import *
 from utils.train_utils import (
@@ -196,7 +196,7 @@ def main():
     # load_path = os.path.join('outputs', load_folder, 'checkpoint-15000')
     load_path = os.path.join('outputs', load_folder)
     checkpoint = torch.load(os.path.join(load_path, 'pytorch_model.bin'))
-    model = base_models.BertWithMoMoTSwitch(config)
+    model = BertWithMoMoTSwitch(config)
     model.load_state_dict(checkpoint)
     model = accelerator.prepare(model) 
     

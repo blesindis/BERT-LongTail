@@ -8,9 +8,9 @@ import torch.optim as optim
 from accelerate import Accelerator
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
+from transformer.MoMoEncoderGating import BertWithMoMoEncoderGating
 
 # Local imports
-import base_models
 from Dataset import BERTPretrain
 from utils.sample_utils import *
 from utils.train_utils import (
@@ -42,7 +42,7 @@ def main():
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
     
-    model = base_models.BertWithMoMoEncoderGating(config)
+    model = BertWithMoMoEncoderGating(config)
     
     num_updates = num_epochs * len(train_loader)
     

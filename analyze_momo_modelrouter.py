@@ -8,9 +8,11 @@ from accelerate import Accelerator
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
+from transformer.MoMoModelRouter import BertWithMoMoModelRouter
+from transformer.MoMoModelRouterCommonLargeNew import BertWithMoMoModelRouterCommonAttnLargeNew
+from transformer.BERT import BertForMLM
 
 # Local imports
-import base_models
 from Dataset import MixedPretrain, ACLForLM, RestaurantForLM, Wikitext103
 from utils.sample_utils import *
 from utils.train_utils import (
@@ -173,14 +175,14 @@ def main():
     load_path = os.path.join('outputs', load_folder)
     center_path = os.path.join('outputs', center_model_path, center_file)
     
-    center_model = base_models.BertForMLM(config)
+    center_model = BertForMLM(config)
     checkpoint = torch.load(os.path.join('outputs', center_model_path, 'pytorch_model.bin'))
     center_model.load_state_dict(checkpoint)
     center_model = accelerator.prepare(center_model)
     
     centers = load_layer_data(center_path)
     checkpoint = torch.load(os.path.join(load_path, 'pytorch_model.bin'))
-    model = base_models.BertWithMoMoModelRouterCommonAttnLargeNew(config, centers)
+    model = BertWithMoMoModelRouterCommonAttnLargeNew(config, centers)
     model.load_state_dict(checkpoint)
     model = accelerator.prepare(model) 
     

@@ -8,9 +8,9 @@ import torch.optim as optim
 from accelerate import Accelerator
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
+from transformer.BERT import BertForMLM
 
 # Local imports
-import base_models
 from Dataset import Wikipedia ,BookCorpus, BERTPretrain
 from utils.sample_utils import *
 from utils.train_utils import (
@@ -41,7 +41,7 @@ def main():
     config = BertConfig.from_json_file(CONFIG_PATH)
     dataset = BERTPretrain(config=config)
     
-    model = base_models.BertForMLM(config)
+    model = BertForMLM(config)
     if LOAD_CHECKPOINT:
         checkpoint = torch.load(os.path.join(STORE_PATH, 'pytorch_model.bin'))
         model.load_state_dict(checkpoint)

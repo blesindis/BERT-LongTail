@@ -8,9 +8,9 @@ from accelerate import Accelerator
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
+from transformer.MoMoSwitchCommon import BertWithMoMoSwitchCommon
 
 # Local imports
-import base_models
 from Dataset import MixedPretrain, ACLForLM, RestaurantForLM, Wikitext103, BERTPretrain
 from utils.sample_utils import *
 from utils.train_utils import (
@@ -29,9 +29,9 @@ VAL_LEN = 500
 
 CONFIG_PATH = 'config/bert_a.json'
 
-model_name = 'momo-switch'
+model_name = 'momo-switch-common'
 
-load_folder = "bert(128)300w-bs64-epoch1-lr3-momo_encoder_gating_128(mean+encoder)"
+load_folder = "bert(128)300w-bs64-epoch1-lr3-momo_switch_common_128"
 
 
 
@@ -48,7 +48,7 @@ def get_attn_outputs_by_cluster(model, train_loader, config):
             for j in range(config.num_hidden_layers):
                 outputs_by_cluster = []
                 
-                cluster, _ = model.bert.layers.layers[j].attention.routing(hidden_states)
+                cluster = model.bert.layers.layers[j].attention.routing(hidden_states)
                 print([len(cluster[_]) for _ in range(len(cluster))])
                 
                 for c in range(NUM_EXPERTS):
@@ -147,10 +147,10 @@ def main():
     
     
     # LOAD MODEL
-    load_path = os.path.join('outputs', load_folder, 'checkpoint-35000')
+    load_path = os.path.join('outputs', load_folder, 'checkpoint-5000')
     # load_path = os.path.join('outputs', load_folder)
     checkpoint = torch.load(os.path.join(load_path, 'pytorch_model.bin'))
-    model = base_models.BertWithMoMoEncoderGating(config)
+    model = BertWithMoMoSwitchCommon(config)
     model.load_state_dict(checkpoint)
     model = accelerator.prepare(model) 
     

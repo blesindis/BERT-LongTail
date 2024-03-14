@@ -1,20 +1,6 @@
 import torch
 import torch.nn as nn
-from transformer.Transformer import BertModel, BertMOEModel, SwitchBertModel
-from transformer.MoMoShare import BertMoMoShareModel
-from transformer.MoMoShareCommonAttn import BertMoMoShareCommonAttnModel
-from transformer.MoMoShareCommonAttnLarge import BertMoMoShareCommonAttnLargeModel
-from transformer.MoMoShareCommonAttnLargeNew import BertMoMoShareCommonAttnLargeNewModel
-from transformer.MoMoShareSwitch import BertMoMoShareSwitchModel
-from transformer.MoMoShareFix import BertMoMoShareFixModel
-from transformer.MoMoShareFixWU import BertMoMoShareFixModelWU
-from transformer.MoMoShareFixCommon import BertMoMoShareFixCommonModel
-from transformer.MoMoCombineAttnLinear import BertMoMoCombineAttnLinearModel
-from transformer.MoMoCommonAttnLoRA import BertMoMoCommonAttnLoRAModel
-from transformer.MoMoDynamicCenter import BertMoMoDynamicCenterModel
-from transformer.MoMoModelRouter import BertMoMoModelRouterModel
-from transformer.MoMoModelRouterCommonLargeNew import BertMoMoModelRouterCommonAttnLargeNewModel
-from transformers.models.bert.modeling_bert import BertOnlyMLMHead
+from transformer.BERT import BertModel
 
 
 class BertForSequenceClassification(nn.Module):

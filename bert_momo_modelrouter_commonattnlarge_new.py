@@ -8,9 +8,10 @@ import torch.optim as optim
 from accelerate import Accelerator
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
+from transformer.MoMoModelRouterCommonLargeNew import BertWithMoMoModelRouterCommonAttnLargeNew
+from transformer.BERT import BertForMLM
 
 # Local imports
-import base_models
 from Dataset import BERTPretrain
 from utils.sample_utils import *
 from utils.train_utils import (
@@ -75,7 +76,7 @@ def main():
     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
     
     if NEED_CENTER:
-        center_model = base_models.BertForMLM(config)
+        center_model = BertForMLM(config)
         checkpoint = torch.load(os.path.join(CENTER_MODEL_PATH, 'pytorch_model.bin'))
         center_model.load_state_dict(checkpoint)
         center_model = accelerator.prepare(center_model)
@@ -107,13 +108,13 @@ def main():
         torch.save(layer_cluster_centers, CENTER_PATH)
         del center_model
     
-    center_model = base_models.BertForMLM(config)
+    center_model = BertForMLM(config)
     checkpoint = torch.load(os.path.join(CENTER_MODEL_PATH, 'pytorch_model.bin'))
     center_model.load_state_dict(checkpoint)
     center_model = accelerator.prepare(center_model)
     
     centers = load_layer_data(CENTER_PATH)
-    model = base_models.BertWithMoMoModelRouterCommonAttnLargeNew(config, centers)
+    model = BertWithMoMoModelRouterCommonAttnLargeNew(config, centers)
     
     num_updates = num_epochs * len(train_loader)
     

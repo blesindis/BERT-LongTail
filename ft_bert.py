@@ -8,9 +8,10 @@ import torch.optim as optim
 from accelerate import Accelerator
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
+from transformer.FT_BERT import BertForSequenceClassification
+from transformer.BERT import BertForMLM
 
 # Local imports
-import base_models, base_models_ft
 from Dataset import Wikipedia ,BookCorpus, BERTPretrain
 from Dataset_ft import SST2
 from utils.sample_utils import *
@@ -76,12 +77,12 @@ def main():
     dataset = SST2(config=config)
     
     # LOAD Pre-trained Model
-    base_model = base_models.BertForMLM(config)
+    base_model = BertForMLM(config)
     checkpoint = torch.load(os.path.join(LOAD_PATH, 'pytorch_model.bin'))
     base_model.load_state_dict(checkpoint)
     
     # Incorporate into finetune model
-    model = base_models_ft.BertForSequenceClassification(config, num_labels=2)
+    model = BertForSequenceClassification(config, num_labels=2)
     copy_parameters(base_model.bert, model.bert)
     
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
