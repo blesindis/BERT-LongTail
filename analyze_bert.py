@@ -30,7 +30,7 @@ VAL_LEN = 500
 CONFIG_PATH = 'config/bert_a.json'
 
 model_name = 'bert'
-load_folder = "bert(128)-bs64-3epoch-lr1-bert"
+load_folder = "bert(128)300w-bs64-1epoch-lr1-bert/checkpoint-30000"
 
 
 

@@ -4,7 +4,7 @@ from einops import rearrange
 from transformer.modules.common import Embeddings
 from transformer.modules.attention import Attention, LoRAAttention
 from transformer.modules.feedforward import FeedForward, SwitchFeedForward
-from transformer.Transformer import SwitchEncoder
+from transformer.Switch import SwitchEncoder
     
     
 class ExpertAttention(nn.Module):

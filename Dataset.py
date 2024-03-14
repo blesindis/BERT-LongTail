@@ -394,7 +394,6 @@ class RestaurantForLM():
         return tokenized_datasets
 
     def __init__(self, config, train_len, val_len):
-    def __init__(self, config, train_len, val_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
         self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
@@ -473,7 +472,6 @@ class ACLForLM():
         tokenized_datasets.save_to_disk(path)
         return tokenized_datasets
 
-    def __init__(self, config, train_len, val_len):
     def __init__(self, config, train_len, val_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
@@ -1472,7 +1470,6 @@ class ACLForLM_small():
         return tokenized_datasets
 
     def __init__(self, config, dataset_len):
-    def __init__(self, config, dataset_len):
         self.block_size = config.seq_len
         self.batch_size = config.batch_size
         self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/model/tokenizer/roberta-base')
@@ -1551,8 +1548,8 @@ class LegalForLM():
         if not config.preprocessed:
             self.preprocess(config, path)
         lm_datasets = load_from_disk(path)
-        lm_datasets_train = torch.utils.data.Subset(lm_datasets['train'], range(dataset_len))
-        lm_datasets_val = torch.utils.data.Subset(lm_datasets['validation'], range(dataset_len))
+        lm_datasets_train = torch.utils.data.Subset(lm_datasets['train'], range(250000))
+        lm_datasets_val = torch.utils.data.Subset(lm_datasets['validation'], range(1600))
         seed = 45
         torch.manual_seed(seed)
         np.random.seed(seed)
