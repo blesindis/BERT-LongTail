@@ -5,6 +5,7 @@ from transformer.modules.common import Embeddings
 from transformer.modules.attention import Attention, LoRAAttention
 from transformer.modules.feedforward import FeedForward, SwitchFeedForward
 
+"""https://github.com/Ma-Lab-Berkeley/MCR2/blob/master/loss.py"""
 
 class ExpertAttention(nn.Module):
     def __init__(self, config):
