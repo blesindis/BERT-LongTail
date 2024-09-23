@@ -883,7 +883,7 @@ class BERTPretrainCount():
 
 
 
-class MixDomain():
+class LePuWiki():
     def group_texts(self, examples):
 
         concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
@@ -938,31 +938,18 @@ class MixDomain():
         self.batch_size = config.batch_size
         self.tokenizer = AutoTokenizer.from_pretrained('/home/mychen/ER_TextSpeech/BERT/pretrained/tokenizer/roberta-base')
         
-        input_paths = [
-            # '/home/mychen/ER_TextSpeech/BERT/data/datasets/acl/acl_anthology.txt',
-            '/home/mychen/ER_TextSpeech/BERT/data/datasets/legal/legal.txt',
-            # '/home/mychen/ER_TextSpeech/BERT/data/datasets/restaurant/yelp_restaurant.txt',
-            '/home/mychen/ER_TextSpeech/BERT/data/datasets/review/review.txt',
-            # '/home/mychen/ER_TextSpeech/BERT/data/datasets/phone/phone.txt',
-            # '/home/mychen/ER_TextSpeech/BERT/data/datasets/camera/camera.txt'
-        ]
         paths = [
-            # '/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/acl',
             '/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/legal',
-            # '/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/restaurant',
             '/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/pubmed',
-            # '/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/phone',
-            # '/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/camera',
-            # '/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/bookcorpus',
-            # config.dataset_cache[config.dataset_name],
+            '/home/mychen/ER_TextSpeech/BERT/data/datasets/tokenized/wikipedia'
         ]
         
         for i, path in enumerate(paths):
             paths[i] = os.path.join(path, str(self.block_size))
         
-        if not config.preprocessed:
-            for path, input_path in zip(paths, input_paths):
-                self.preprocess(config, path, input_path)
+        # if not config.preprocessed:
+        #     for path, input_path in zip(paths, input_paths):
+        #         self.preprocess(config, path, input_path)
         
         datasets = []
         for path in paths:
@@ -970,17 +957,11 @@ class MixDomain():
 
         data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm_probability=0.15)
         
-        val_data = None
-        train_data = None
-        for dataset in datasets:
-            if not val_data:
-                val_data = Subset(dataset['validation'], range(1600))
-                train_data = Subset(dataset['train'], range(250000))
-            else:
-                dataset_val = Subset(dataset['validation'], range(1600))
-                dataset_train = Subset(dataset['train'], range(250000))
-                val_data = ConcatDataset([val_data, dataset_val])
-                train_data = ConcatDataset([train_data, dataset_train])                
+        val_legal, val_pub, val_wiki = Subset(datasets[0]['validation'], range(1600)), Subset(datasets[1]['validation'], range(1600)), Subset(datasets[2]['validation'], range(1600))
+        train_legal, train_pub, train_wiki = Subset(datasets[0]['train'], range(10000)), Subset(datasets[1]['train'], range(10000)), Subset(datasets[2]['train'], range(280000))
+        
+        val_data = ConcatDataset([val_legal, val_pub, val_wiki])
+        train_data = ConcatDataset([train_legal, train_pub, train_wiki])
         
         seed = 42
         torch.manual_seed(seed)
@@ -988,6 +969,9 @@ class MixDomain():
         
         self.train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True, collate_fn=data_collator)
         self.val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.val_loader_legal = DataLoader(val_legal, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.val_loader_pub = DataLoader(val_pub, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
+        self.val_loader_wiki = DataLoader(val_wiki, batch_size=self.batch_size, shuffle=False, collate_fn=data_collator)
 
 
 class LegalForLM():

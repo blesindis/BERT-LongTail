@@ -1,4 +1,5 @@
 import os
+import copy
 import umap
 import numpy as np
 import torch
@@ -8,10 +9,10 @@ from accelerate import Accelerator
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
-from transformer.MoMoTSwitch import BertWithMoMoTSwitch
+from transformer.MoMoTSwitchEmb import BertWithMoMoTSwitchEmb
 
 # Local imports
-from Dataset import MixedPretrain, ACLForLM, RestaurantForLM, Wikitext103
+from Dataset import BERTPretrain
 from utils.sample_utils import *
 from utils.train_utils import (
     validate,
@@ -31,7 +32,7 @@ CONFIG_PATH = 'config/bert_a.json'
 
 model_name = 'momot-switch'
 
-load_folder = "bert(128)300w-bs64-epoch1-lr3-momot_switch_lora128(balance)/checkpoint-20000"
+load_folder = "bert(128)300w-bs64-epoch1-lr3-momot_switch_emb_lora128/checkpoint-5000"
 
 
 
@@ -44,27 +45,35 @@ def get_attn_outputs_by_cluster(model, train_loader, config):
                 break            
 
             hidden_states = model.bert.embeddings(batch['input_ids'])
+            cluster_add = None
             for j in range(config.num_hidden_layers):
                 outputs_by_cluster = []
-                
-                cluster, _ = model.bert.layers.layers[j].routing(hidden_states)
-                print([len(cluster[_]) for _ in range(len(cluster))])
+                if j == 0:
+                    cluster, _ = model.bert.layers.layers[j].routing(hidden_states)
+                    cluster_add = copy.deepcopy(cluster)
+                    print([len(cluster[_]) for _ in range(len(cluster))])
+                    for c in range(NUM_EXPERTS):
+                        cluster_add[c] = [d.to('cpu') + config.batch_size * i for d in cluster[c]]   
                 
                 for c in range(NUM_EXPERTS):
+                    # print(cluster)
                     outputs_by_cluster.append(model.bert.layers.layers[j].unique_experts[c].attention(hidden_states[cluster[c],:,:], batch['attention_mask'][cluster[c],:]).to('cpu'))
-                    cluster[c] = [d.to('cpu') + config.batch_size * i for d in cluster[c]]   
                                   
                 outputs_by_cluster.append(model.bert.layers.layers[j].common_expert.attention(hidden_states, batch['attention_mask']).to('cpu'))
-                hidden_states = model.bert.layers.layers[j](hidden_states, batch['attention_mask'])
+                
+                if j == 0:
+                    hidden_states, _ = model.bert.layers.layers[j](hidden_states, batch['attention_mask'])
+                else:
+                    hidden_states = model.bert.layers.layers[j](hidden_states, batch['attention_mask'], cluster)
                 
                 if i == 0:
                     layer_outputs.append(outputs_by_cluster)
-                    cluster_lists.append(cluster)
+                    cluster_lists.append(cluster_add)
                 else:
                     for m in range(len(outputs_by_cluster)):
                         layer_outputs[j][m] = torch.cat([layer_outputs[j][m], outputs_by_cluster[m]], dim=0)
                     for c in range(NUM_EXPERTS):
-                        cluster_lists[j][c] += cluster[c]
+                        cluster_lists[j][c] += cluster_add[c]
     return layer_outputs, cluster_lists
 
 
@@ -187,7 +196,7 @@ def main():
     # dataset = RestaurantForLM(config=config, train_len=TRAIN_LEN, val_len=VAL_LEN)
     
     # LOAD DATASET
-    dataset = MixedPretrain(config=config)
+    dataset = BERTPretrain(config=config)
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
     
@@ -196,7 +205,7 @@ def main():
     # load_path = os.path.join('outputs', load_folder, 'checkpoint-15000')
     load_path = os.path.join('outputs', load_folder)
     checkpoint = torch.load(os.path.join(load_path, 'pytorch_model.bin'))
-    model = BertWithMoMoTSwitch(config)
+    model = BertWithMoMoTSwitchEmb(config)
     model.load_state_dict(checkpoint)
     model = accelerator.prepare(model) 
     

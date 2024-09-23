@@ -5,6 +5,7 @@ from transformer.modules.common import Embeddings
 from transformer.modules.attention import Attention, LoRAAttention
 from transformer.modules.feedforward import FeedForward, SwitchFeedForward, SwitchFeedForwardLoRA, SwitchFeedForwardLoRALatent
 from transformer.Switch import SwitchEncoder
+from transformer.BERT import TransformerEncoder
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead
     
     
@@ -76,17 +77,6 @@ class MoMoShareLayer(nn.Module):
         self.switch = nn.Linear(self.lora_dim, self.n_experts)
         self.softmax = nn.Softmax(dim=-1)
         
-        self.loss = None
-        self.loss_coef = 1e-2
-
-    def load_balance_loss(self, counts, route_prob):
-        total = counts.sum(dim=-1, keepdims=True)
-        route_frac = counts / total
-        route_prob = route_prob / total
-        load_balancing_loss = self.n_experts * (route_frac * route_prob).sum()
-
-        return load_balancing_loss
-        
     def routing(self, hidden_states):
         cluster_list = [[] for _ in range(self.n_experts)]
         
@@ -100,10 +90,9 @@ class MoMoShareLayer(nn.Module):
         
         route_prob = self.softmax(self.switch(h_encoded))
         route_prob_max, routes = torch.max(route_prob, dim=-1)
-        cluster_list = [torch.eq(routes, i).nonzero(as_tuple=True)[0] for i in range(self.n_experts)]      
-        counts = h_encoded.new_tensor([len(cluster_list[i]) for i in range(self.n_experts)])
-        self.loss = self.loss_coef * self.load_balance_loss(counts, route_prob)
         
+        cluster_list = [torch.eq(routes, i).nonzero(as_tuple=True)[0] for i in range(self.n_experts)]      
+             
         return cluster_list, route_prob_max
         
     def forward(self, hidden_states, attention_mask):
@@ -127,17 +116,21 @@ class MoMoShareLayer(nn.Module):
 class BertMoMoShare(nn.Module):
     def __init__(self, config):
         super(BertMoMoShare, self).__init__()
-        self.layers = nn.ModuleList([MoMoShareLayer(config) for i in range(config.num_hidden_layers)])
-
+        self.num_common_layers = 6
+        self.layers = nn.ModuleList(
+            [TransformerEncoder(config) for _ in range(self.num_common_layers)] +
+            [MoMoShareLayer(config) for _ in range(config.num_hidden_layers - self.num_common_layers)]
+        )
+        
     def forward(self, hidden_states, attention_mask):
         for i, layer in enumerate(self.layers):
             hidden_states = layer(hidden_states, attention_mask)
         return hidden_states
 
 
-class BertMoMoTSwitchModel(nn.Module):
+class BertMoMoTSwitchCommonLayerModel(nn.Module):
     def __init__(self, config):
-        super(BertMoMoTSwitchModel, self).__init__()
+        super(BertMoMoTSwitchCommonLayerModel, self).__init__()
         self.embeddings = Embeddings(config)
         self.layers = BertMoMoShare(config)
         
@@ -147,11 +140,11 @@ class BertMoMoTSwitchModel(nn.Module):
         return outputs
     
     
-class BertWithMoMoTSwitch(nn.Module):
+class BertWithMoMoTSwitchCommonLayer(nn.Module):
     def __init__(self, config):
-        super(BertWithMoMoTSwitch, self).__init__()
+        super(BertWithMoMoTSwitchCommonLayer, self).__init__()
         self.config = config        
-        self.bert = BertMoMoTSwitchModel(config)
+        self.bert = BertMoMoTSwitchCommonLayerModel(config)
         self.head = BertOnlyMLMHead(config)
         self.criterion = nn.CrossEntropyLoss() 
         self.apply(self._init_weights)

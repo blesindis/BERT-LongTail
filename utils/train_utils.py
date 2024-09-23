@@ -31,6 +31,13 @@ def load_layer_data(path):
     return layer_data
 
 
+def load_layer_data_last(path):
+    layer_data_dict = torch.load(path, map_location='cuda')
+    layer_data = list(layer_data_dict.values())
+    layer_data = torch.tensor(layer_data[0]).to('cuda')
+    return layer_data
+
+
 def copy_parameters(source_module, target_module):
     for source_param, target_param in zip(source_module.parameters(), target_module.parameters()):
         target_param.data.copy_(source_param.data)

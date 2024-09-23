@@ -8,7 +8,7 @@ import torch.optim as optim
 from accelerate import Accelerator
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
-from transformer.MoMoTSwitchEmb import BertWithMoMoTSwitchEmb
+from transformer.MoMoTSwitchCommonLayer import BertWithMoMoTSwitchCommonLayer
 
 # Local imports
 from Dataset import BERTPretrain
@@ -20,7 +20,7 @@ from utils.train_utils import (
 )
 
 # folder paths
-STORE_FOLDER = "bert(128)300w-bs64-epoch1-lr3-momot_switch_emb_lora128_(W Switch 16)"
+STORE_FOLDER = "bert(128)300w-bs64-epoch1-lr3-momot_switch_common_layer(6)_lora128"
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 CONFIG_PATH = 'config/bert_a.json'
 
@@ -43,7 +43,7 @@ def main():
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
     
-    model = BertWithMoMoTSwitchEmb(config)
+    model = BertWithMoMoTSwitchCommonLayer(config)
     
     num_updates = num_epochs * len(train_loader)
     

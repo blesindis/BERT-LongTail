@@ -36,10 +36,11 @@ class FeedForwardLoRA(nn.Module):
 class SwitchFeedForward(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.n_experts = config.num_experts
         self.capacity_factor = config.capacity_factor
         self.is_scale_prob = True
-        self.drop_tokens = False
+        self.drop_tokens = config.drop_tokens
         self.experts = nn.ModuleList([FeedForward(config) for _ in range(config.num_experts)])
         self.switch = nn.Linear(config.hidden_size, self.n_experts)
         self.softmax = nn.Softmax(dim=-1)
@@ -72,7 +73,12 @@ class SwitchFeedForward(nn.Module):
         if self.drop_tokens:
             for i in range(self.n_experts):
                 if len(indexes_list[i]) > capacity:
-                    indexes_list[i] = indexes_list[i][torch.randperm(len(indexes_list[i]))]
+                    if self.config.priority_drop:
+                        prob_i = route_prob_max[indexes_list[i]]
+                        _, sorted_indices = torch.sort(prob_i, descending=True)
+                        indexes_list[i] = indexes_list[i][sorted_indices]
+                    else:
+                        indexes_list[i] = indexes_list[i][torch.randperm(len(indexes_list[i]))]
                     dropped.append(indexes_list[i][capacity:])
                     indexes_list[i] = indexes_list[i][:capacity]
 
@@ -92,12 +98,13 @@ class SwitchFeedForward(nn.Module):
     
     
 class SwitchFeedForwardLoRA(nn.Module):
-    def __init__(self, config, lora_dim, n_experts):
+    def __init__(self, config, lora_dim, n_experts, drop_tokens=False):
         super().__init__()
+        self.config = config
         self.n_experts = n_experts
         self.capacity_factor = config.capacity_factor
         self.is_scale_prob = True
-        self.drop_tokens = False
+        self.drop_tokens = drop_tokens
         self.experts = nn.ModuleList([FeedForwardLoRA(config, lora_dim) for _ in range(self.n_experts)])
         self.switch = nn.Linear(config.hidden_size, self.n_experts)
         self.softmax = nn.Softmax(dim=-1)
@@ -130,6 +137,12 @@ class SwitchFeedForwardLoRA(nn.Module):
         if self.drop_tokens:
             for i in range(self.n_experts):
                 if len(indexes_list[i]) > capacity:
+                    if self.config.priority_drop:
+                        prob_i = route_prob_max[indexes_list[i]]
+                        _, sorted_indices = torch.sort(prob_i, descending=True)
+                        indexes_list[i] = indexes_list[i][sorted_indices]
+                    else:
+                        indexes_list[i] = indexes_list[i][torch.randperm(len(indexes_list[i]))]
                     indexes_list[i] = indexes_list[i][torch.randperm(len(indexes_list[i]))]
                     dropped.append(indexes_list[i][capacity:])
                     indexes_list[i] = indexes_list[i][:capacity]

@@ -20,7 +20,7 @@ from utils.train_utils import (
 )
 
 # folder paths
-STORE_FOLDER = "bert(128)300w-bs64-epoch1-lr3-momot_switch_lora128"
+STORE_FOLDER = "bert(128)300w-bs64-epoch1-lr3-momot_switch_lora128(balance)"
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 CONFIG_PATH = 'config/bert_a.json'
 
@@ -62,8 +62,11 @@ def main():
         losses = []        
         for i, batch in enumerate(train_loader):                      
             loss, _ = model(**batch)
+            balance_loss = [model.bert.layers.layers[j].loss for j in range(config.num_hidden_layers)]
             losses.append(accelerator.gather(loss.repeat(config.batch_size)))
             
+            total_balance_loss = sum(balance_loss)
+            loss += total_balance_loss
             optimizer.zero_grad()
             accelerator.backward(loss)
             optimizer.step()
