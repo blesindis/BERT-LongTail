@@ -3,19 +3,65 @@ import torch.nn as nn
 from einops import rearrange
 from transformer.modules.common import Embeddings
 from transformer.modules.attention import Attention, LoRAAttention
-from transformer.modules.feedforward import FeedForward, SwitchFeedForward
+from transformer.modules.feedforward import FeedForward, SwitchFeedForward, SwitchFeedForwardLoRA
 from transformer.Switch import SwitchEncoder
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead
     
     
-class ExpertAttention(nn.Module):
-    def __init__(self, config, centers):
+class ExpertTransformerCommon(nn.Module):
+    def __init__(self, config):
         super().__init__()
+        self.attention = Attention(config)
+        self.ffn = SwitchFeedForwardLoRA(config, lora_dim=128, n_experts=4)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        
+    def forward(self, hidden_states, attention_mask) -> torch.Tensor:
+        """Pre Norm No Dropout"""
+        # att_output = self.attention(hidden_states, attention_mask)
+        # residual = att_output
+        # att_output = self.LayerNorm(att_output)
+        # ffn_output = self.ffn(att_output)
+        # output = residual + ffn_output
+        """Post Norm"""
+        att_output = self.attention(hidden_states, attention_mask)
+        ffn_output = self.ffn(att_output)
+        ffn_output = self.dropout(ffn_output)
+        output = self.LayerNorm(att_output + ffn_output)
+        return output
+    
+    
+class ExpertTransformerUnique(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.attention = LoRAAttention(config, lora_dim=128)
+        self.ffn = SwitchFeedForwardLoRA(config, lora_dim=128, n_experts=4)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        
+    def forward(self, hidden_states, attention_mask) -> torch.Tensor:
+        """Pre Norm No Dropout"""
+        # att_output = self.attention(hidden_states, attention_mask)
+        # residual = att_output
+        # att_output = self.LayerNorm(att_output)
+        # ffn_output = self.ffn(att_output)
+        # output = residual + ffn_output
+        """Post Norm"""
+        att_output = self.attention(hidden_states, attention_mask)
+        ffn_output = self.ffn(att_output)
+        ffn_output = self.dropout(ffn_output)
+        output = self.LayerNorm(att_output + ffn_output)
+        return output
+    
+    
+class MoMoShareLayer(nn.Module):
+    def __init__(self, config, centers):
+        super(MoMoShareLayer, self).__init__()
         self.config = config
         self.n_experts = 2
-        self.experts = nn.ModuleList([LoRAAttention(config, lora_dim=128) for i in range(self.n_experts)])
-        self.common_expert = Attention(config)
         self.centers = centers
+        self.common_expert = ExpertTransformerCommon(config)
+        self.unique_experts = nn.ModuleList([ExpertTransformerUnique(config) for _ in range(self.n_experts)])
         
     def routing(self, hidden_states):
         cluster_list = [[] for _ in range(self.n_experts)]
@@ -25,49 +71,18 @@ class ExpertAttention(nn.Module):
         dist = torch.cdist(h.double(), self.centers.double().detach())
         _, min_indices = torch.min(dist, dim=1)
         cluster_list = [torch.eq(min_indices, i).nonzero(as_tuple=True)[0] for i in range(self.n_experts)]      
-        # for i, cluster_index in enumerate(min_indices):
-        #     cluster_list[cluster_index.item()].append(i)
             
         return cluster_list
-    
+        
     def forward(self, hidden_states, attention_mask, routing_states):
         unique_output = hidden_states.new_zeros(hidden_states.shape)
         cluster_list = self.routing(routing_states)
         for i in range(self.n_experts):                        
-            unique_output[cluster_list[i], :, :] = self.experts[i](hidden_states[cluster_list[i], :, :], attention_mask[cluster_list[i], :])
+            unique_output[cluster_list[i], :, :] = self.unique_experts[i](hidden_states[cluster_list[i], :, :], attention_mask[cluster_list[i], :])
+        
         common_output = self.common_expert(hidden_states, attention_mask)
         
-        output = unique_output + common_output
-        # output = 0.8 * unique_output + 0.2 * common_output
-        return output
-    
-    
-class MoMoShareLayer(nn.Module):
-    def __init__(self, config, centers):
-        super(MoMoShareLayer, self).__init__()
-        self.config = config
-        self.attention = ExpertAttention(config, centers)
-        self.ffn = SwitchFeedForward(config)
-        # self.ffn = FeedForward(config)
-
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        
-    def forward(self, hidden_states, attention_mask, routing_states):
-        """Pre Norm"""
-        # att_output = self.attention(hidden_states, attention_mask)
-        # residual = att_output
-        # att_output = self.LayerNorm(att_output)
-        # ffn_output = self.ffn(att_output)
-        # # ffn_output = self.dropout(ffn_output)
-        
-        # # output = self.LayerNorm(att_output + ffn_output)
-        # output = residual + ffn_output
-        """Post Norm"""
-        att_output = self.attention(hidden_states, attention_mask, routing_states)
-        ffn_output = self.ffn(att_output)
-        ffn_output = self.dropout(ffn_output)
-        output = self.LayerNorm(att_output + ffn_output)        
+        output = unique_output + common_output 
         
         return output
 
@@ -92,9 +107,9 @@ class BertMoMoShare(nn.Module):
         return hidden_states
 
 
-class BertMoMoModelRouterCommonAttnLargeNewModel(nn.Module):
+class BertMoMoTModel(nn.Module):
     def __init__(self, config, centers):
-        super(BertMoMoModelRouterCommonAttnLargeNewModel, self).__init__()
+        super(BertMoMoTModel, self).__init__()
         self.embeddings = Embeddings(config)
         self.layers = BertMoMoShare(config, centers)
         
@@ -103,12 +118,12 @@ class BertMoMoModelRouterCommonAttnLargeNewModel(nn.Module):
         outputs = self.layers(embeddings, attention_mask, routing_states)
         return outputs
     
-    
-class BertWithMoMoModelRouterCommonAttnLargeNew(nn.Module):
+ 
+class BertWithMoMoT(nn.Module):
     def __init__(self, config, centers):
-        super(BertWithMoMoModelRouterCommonAttnLargeNew, self).__init__()
+        super(BertWithMoMoT, self).__init__()
         self.config = config        
-        self.bert = BertMoMoModelRouterCommonAttnLargeNewModel(config, centers)
+        self.bert = BertMoMoTModel(config, centers)
         self.head = BertOnlyMLMHead(config)
         self.criterion = nn.CrossEntropyLoss() 
         self.apply(self._init_weights)
@@ -132,3 +147,4 @@ class BertWithMoMoModelRouterCommonAttnLargeNew(nn.Module):
         mlm_loss = self.criterion(scores.view(-1, self.config.vocab_size), labels.view(-1)) # scores should be of size (num_words, vocab_size)
 
         return mlm_loss, scores
+    

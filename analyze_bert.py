@@ -8,10 +8,10 @@ from accelerate import Accelerator
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
+from transformer.BERT import BertForMLM
 
 # Local imports
-import base_models
-from Dataset import MixedPretrain, ACLForLM, RestaurantForLM, Wikitext103
+from Dataset import MixedPretrain, ACLForLM, RestaurantForLM, Wikitext103, BERTPretrain
 from utils.sample_utils import *
 from utils.train_utils import (
     validate,
@@ -30,7 +30,7 @@ VAL_LEN = 500
 CONFIG_PATH = 'config/bert_a.json'
 
 model_name = 'bert'
-load_folder = "bert(128)-bs64-3epoch-lr1-bert"
+load_folder = "bert(128)300w-bs64-1epoch-lr1-bert/checkpoint-5000"
 
 
 
@@ -100,7 +100,7 @@ def main():
     # dataset = RestaurantForLM(config=config, train_len=TRAIN_LEN, val_len=VAL_LEN)
     
     # LOAD DATASET
-    dataset = MixedPretrain(config=config)
+    dataset = BERTPretrain(config=config)
     train_loader, val_loader = dataset.train_loader, dataset.val_loader
     train_loader, val_loader = accelerator.prepare(train_loader, val_loader)
     
@@ -110,7 +110,7 @@ def main():
     load_path = os.path.join('outputs', load_folder)
     
     checkpoint = torch.load(os.path.join(load_path, 'pytorch_model.bin'))
-    model = base_models.BertForMLM(config)
+    model = BertForMLM(config)
     model.load_state_dict(checkpoint)
     model = accelerator.prepare(model) 
     

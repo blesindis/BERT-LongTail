@@ -8,7 +8,7 @@ import torch.optim as optim
 from accelerate import Accelerator
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
-from transformer.MoMoModelRouterCommonLargeNew import BertWithMoMoModelRouterCommonAttnLargeNew
+from transformer.MoMoT import BertWithMoMoT
 from transformer.BERT import BertForMLM
 
 # Local imports
@@ -19,7 +19,7 @@ from utils.train_utils import (
     load_layer_data,
 )
 
-NEED_CENTER = True
+NEED_CENTER = False
 NUM_EXPERTS = 2
 NUM_FFN_EXPERTS = 2
 SAMPLE_BATCHES = 20
@@ -31,8 +31,8 @@ VAL_LEN = 500
 # folder paths
 # CENTER_MODEL_PATH = "outputs/0115-bert-wiki103(256)-bs24-(save)/checkpoint-10000"
 CENTER_MODEL_PATH = "outputs/bert(128)300w-bs64-1epoch-lr1-bert/checkpoint-10000"
-CENTER_PATH = os.path.join(CENTER_MODEL_PATH, 'centers-2-momoe-transformer.pth')
-STORE_FOLDER = "bert(128)300w-bs64-1epoch-lr3-momo_model_router_common_lora128_router10000"
+CENTER_PATH = os.path.join(CENTER_MODEL_PATH, 'centers-2-momoe-transformer-mean.pth')
+STORE_FOLDER = "bert(128)300w-bs64-1epoch-lr3-momot_lora128_router10000(mean center)"
 STORE_PATH = os.path.join('outputs', STORE_FOLDER)
 CONFIG_PATH = 'config/bert_a.json'
 
@@ -101,9 +101,15 @@ def main():
                         layer_outputs[j+1] = torch.cat([layer_outputs[j+1], hidden_states.to('cpu')], dim=0)                
                     
         layer_outputs = layer_outputs[:-1]
-        for j, layer_output in enumerate(layer_outputs):                 
+        for j, layer_output in enumerate(layer_outputs):    
+                         
             cluster_indexes, cluster_centers = cluster_kmeans(layer_output.mean(dim=1), NUM_EXPERTS)
-            layer_cluster_centers['layer' + str(j)] = cluster_centers
+            mean_centers = []
+            for e in range(NUM_EXPERTS):
+                mean = layer_output.mean(dim=1)[cluster_indexes[e]].mean(dim=0).tolist()
+                mean_centers.append(mean)
+            # print(cluster_indexes, cluster_centers)
+            layer_cluster_centers['layer' + str(j)] = mean_centers
                     
         torch.save(layer_cluster_centers, CENTER_PATH)
         del center_model
@@ -114,7 +120,7 @@ def main():
     center_model = accelerator.prepare(center_model)
     
     centers = load_layer_data(CENTER_PATH)
-    model = BertWithMoMoModelRouterCommonAttnLargeNew(config, centers)
+    model = BertWithMoMoT(config, centers)
     
     num_updates = num_epochs * len(train_loader)
     

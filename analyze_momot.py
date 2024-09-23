@@ -8,8 +8,7 @@ from accelerate import Accelerator
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from transformers import BertConfig, get_cosine_schedule_with_warmup
-from transformer.MoMoModelRouter import BertWithMoMoModelRouter
-from transformer.MoMoModelRouterCommonLargeNew import BertWithMoMoModelRouterCommonAttnLargeNew
+from transformer.MoMoT import BertWithMoMoT
 from transformer.BERT import BertForMLM
 
 # Local imports
@@ -31,13 +30,13 @@ VAL_LEN = 500
 
 CONFIG_PATH = 'config/bert_a.json'
 
-model_name = 'momo-modelrouter'
+model_name = 'momot'
 
 center_model_path = "bert(128)300w-bs64-1epoch-lr1-bert/checkpoint-10000"
 
 center_file = 'centers-2-momoe-transformer.pth'
 
-load_folder = "bert(128)300w-bs64-1epoch-lr3-momo_model_router_common_lora128_router10000/checkpoint-30000"
+load_folder = "bert(128)300w-bs64-1epoch-lr3-momot_lora128_router10000/checkpoint-20000"
 
 
 
@@ -60,14 +59,56 @@ def get_attn_outputs_by_cluster(model, train_loader, config, center_model):
             for j in range(config.num_hidden_layers):
                 outputs_by_cluster = []
                 
-                cluster = model.bert.layers.layers[j].attention.routing(routing_states[j])
+                cluster = model.bert.layers.layers[j].routing(routing_states[j])
                 print([len(cluster[_]) for _ in range(len(cluster))])
                 
                 for c in range(NUM_EXPERTS):
-                    outputs_by_cluster.append(model.bert.layers.layers[j].attention.experts[c](hidden_states[cluster[c],:,:], batch['attention_mask'][cluster[c],:]).to('cpu'))
+                    outputs_by_cluster.append(model.bert.layers.layers[j].unique_experts[c].attention(hidden_states[cluster[c],:,:], batch['attention_mask'][cluster[c],:]).to('cpu'))
                     cluster[c] = [d.to('cpu') + config.batch_size * i for d in cluster[c]]   
                                   
-                outputs_by_cluster.append(model.bert.layers.layers[j].attention.common_expert(hidden_states, batch['attention_mask']).to('cpu'))
+                outputs_by_cluster.append(model.bert.layers.layers[j].common_expert.attention(hidden_states, batch['attention_mask']).to('cpu'))
+                hidden_states = model.bert.layers.layers[j](hidden_states, batch['attention_mask'], routing_states[j])
+                
+                if i == 0:
+                    layer_outputs.append(outputs_by_cluster)
+                    cluster_lists.append(cluster)
+                else:
+                    for m in range(len(outputs_by_cluster)):
+                        layer_outputs[j][m] = torch.cat([layer_outputs[j][m], outputs_by_cluster[m]], dim=0)
+                    for c in range(NUM_EXPERTS):
+                        cluster_lists[j][c] += cluster[c]
+    return layer_outputs, cluster_lists
+
+
+def get_ffn_outputs_by_cluster(model, train_loader, config, center_model):
+    with torch.no_grad():
+        layer_outputs = []
+        cluster_lists = []
+        for i, batch in enumerate(train_loader):
+            if i >= SAMPLE_BATCHES:
+                break            
+            routing_states = []             
+            hidden_states = center_model.bert.embeddings(batch['input_ids'])
+            routing_states.append(hidden_states)                    
+            for j in range(config.num_hidden_layers):
+                hidden_states = center_model.bert.encoders.layers[j](hidden_states, batch['attention_mask'])
+                routing_states.append(hidden_states)
+                
+            print(i)
+            hidden_states = model.bert.embeddings(batch['input_ids'])
+            for j in range(config.num_hidden_layers):
+                outputs_by_cluster = []
+                
+                cluster = model.bert.layers.layers[j].routing(routing_states[j])
+                print([len(cluster[_]) for _ in range(len(cluster))])
+                
+                for c in range(NUM_EXPERTS):
+                    att_output = model.bert.layers.layers[j].unique_experts[c].attention(hidden_states[cluster[c],:,:], batch['attention_mask'][cluster[c],:])
+                    outputs_by_cluster.append(model.bert.layers.layers[j].unique_experts[c].ffn(att_output).to('cpu'))
+                    cluster[c] = [d.to('cpu') + config.batch_size * i for d in cluster[c]]   
+                
+                att_output = model.bert.layers.layers[j].common_expert.attention(hidden_states, batch['attention_mask'])                  
+                outputs_by_cluster.append(model.bert.layers.layers[j].common_expert.ffn(att_output).to('cpu'))
                 hidden_states = model.bert.layers.layers[j](hidden_states, batch['attention_mask'], routing_states[j])
                 
                 if i == 0:
@@ -182,13 +223,14 @@ def main():
     
     centers = load_layer_data(center_path)
     checkpoint = torch.load(os.path.join(load_path, 'pytorch_model.bin'))
-    model = BertWithMoMoModelRouterCommonAttnLargeNew(config, centers)
+    model = BertWithMoMoT(config, centers)
     model.load_state_dict(checkpoint)
     model = accelerator.prepare(model) 
     
     # GET OUTPUTS
     # layer_outputs, clusters = get_attn_outputs(model, train_loader, config, center_model)
-    layer_outputs, clusters = get_attn_outputs_by_cluster(model, train_loader, config, center_model)
+    # layer_outputs, clusters = get_attn_outputs_by_cluster(model, train_loader, config, center_model)
+    layer_outputs, clusters = get_ffn_outputs_by_cluster(model, train_loader, config, center_model)
     
     # DRAW PICS
     colors = ['b', 'r', 'green', 'yellow']
